@@ -86,10 +86,11 @@ def _render_png(mermaid_src: str, mmdc: str) -> bytes | None:
         png_path = Path(tmp) / "diagram.png"
         mmd_path.write_text(mermaid_src, encoding="utf-8")
         result = subprocess.run(
-            [mmdc, "-i", str(mmd_path), "-o", str(png_path), "-w", "1400"],
+            [mmdc, "-i", str(mmd_path), "-o", str(png_path),
+             "-w", "2400", "-H", "1800", "--scale", "2", "-b", "transparent"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
         if result.returncode == 0 and png_path.exists():
             return png_path.read_bytes()
