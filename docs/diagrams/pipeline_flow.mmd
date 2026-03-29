@@ -1,21 +1,39 @@
 flowchart TD
-    A["CSV Upload\n(any dataset)"] --> B["Type Detection\ndetect_dataset_type(df)\ncolumn signature matching"]
-    B --> C{"Dataset Type?"}
-    C -->|"diabetes"| D1["Type: diabetes\nicon + label shown"]
-    C -->|"generic"| D2["Type: generic\nno special handling"]
-    D1 --> E["Atomic Import\nimport_csv()\ndf.to_sql + _datasets registry\nchecksum dedup"]
-    D2 --> E
-    E --> F{"Enrichment\nRequired?"}
-    F -->|"diabetes only"| G["enrich_dataset()\nUnpivot 23 med columns\nDecode diag_1/2/3 via ICD-9\nCreate ds_*_meds + ds_*_diag"]
-    F -->|"generic"| H["No enrichment\nenrichment_status = none"]
-    G --> I["enrichment_status = done"]
-    H --> J["Analytics Registry\nget_functions_for(dataset_type)"]
-    I --> J
-    J --> K["Generic Functions\n8 available for all datasets\ndescribe, correlation, groupby..."]
-    J --> L["Diabetes Functions\n6 available for diabetes only\nreadmission, HbA1c, diagnoses..."]
-    K --> M["(DataFrame, Figure | None)\nresult contract"]
-    L --> M
-    M --> N["Streamlit UI\nAd Hoc Charts / Analytics\nReports"]
+    Upload["📂 CSV Upload / File Import"]
+    Upload --> Validate
+    Validate["🔍 Validation<br/>null threshold · outlier z-score"]
+    Validate --> Detect
+    Detect{"🏷️ Type Detection"}
+    Detect -->|"generic (8)"| Store
+    Detect -->|"diabetes (1)"| Enrich
+    Enrich["⚗️ Enrichment<br/>diagnoses · medications"]
+    Enrich --> Store
+    Store[("💾 SQLite data.db<br/>9 datasets · 1 enriched")]
+    Store --> Explore
+    Store --> Charts
+    Store --> Analytics
+    Explore["🔍 Data Exploration<br/>filters · preview · download"]
+    Charts["📈 Ad Hoc Charts<br/>14 chart types"]
+    Analytics["📊 Analytics<br/>24 functions"]
+    Analytics --> Reports
+    Explore --> Reports
+    Charts --> Reports
+    Reports["📄 Reports<br/>0 item(s)"]
+    Reports --> PDF
+    Reports --> HTML
+    PDF["📥 PDF Export<br/>fpdf2 · Unicode fonts"]
+    HTML["🌐 HTML Export<br/>base64 embedded images"]
 
-    E -.->|"duplicate checksum"| ERR["ImportError\nDuplicate rejected"]
-    L -.->|"enrichment_status != done"| ENRERR["EnrichmentRequiredError\nuser prompted to enrich"]
+    subgraph Datasets
+        DS0["diabetic data<br/>101,766 rows"]
+        DS1["heart disease cleveland<br/>303 rows"]
+        DS2["pima indians diabetes<br/>768 rows"]
+        DS3["eurostat hospital discharges<br/>646,797 rows"]
+        DS4["eurostat causes of death<br/>1,038,374 rows"]
+        DS5["owid covid19<br/>429,435 rows"]
+        DS6["covid hospital icu<br/>11,226 rows"]
+        DS7["OWID Causes of Child Morta..<br/>291 rows"]
+        DS8["World Mortality — Weekly A..<br/>34,351 rows"]
+    end
+
+    Store -.-> Datasets

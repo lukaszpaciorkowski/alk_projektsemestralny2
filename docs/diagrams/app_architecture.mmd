@@ -1,45 +1,32 @@
-graph LR
-    subgraph UI ["UI - Streamlit App (app/)"]
-        P1["Data Sources\n(page 1)"]
-        P2["Data Exploration\n(page 2)"]
-        P3["Ad Hoc Charts\n(page 3)"]
-        P4["Analytics\n(page 4)"]
-        P5["Reports\n(page 5)"]
-        P6["Architecture\n(page 6)"]
-    end
-    subgraph Core ["Core Layer (app/core/)"]
-        PL["pipeline.py\nimport_csv · enrich_dataset\ndrop_dataset · list_datasets"]
-        TD["type_detector.py\ndetect_dataset_type\ncolumn signature matching"]
-        RG["registry.py\nREGISTRY dict\nget_functions_for()"]
-        QY["query.py\nfetch_table · Filter\nfetch_column_stats"]
-        CB["chart_builder.py\nbuild_chart()"]
-        subgraph Analytics ["Analytics (app/core/analytics/)"]
-            GA["generic.py\n8 functions\ndescribe · correlation\nvalue_counts · groupby\ncrosstab · distribution\nnull_analysis · dtypes"]
-            DA["diabetes.py\n6 functions\nreadmission_by_group\nhba1c_vs_readmission\nlos_by_readmission\nmedications_vs_los\ntop_diagnoses\nmedication_frequency"]
-        end
-    end
-    subgraph Storage ["Storage"]
-        DB[("data/data.db\n_datasets registry\nds_* tables\nds_*_meds enrichment\nds_*_diag enrichment")]
-        CSV["data/raw/\n*.csv uploads"]
-        OUT["outputs/figures/\noutputs/report/"]
+flowchart TD
+    subgraph UI["Streamlit UI (6 pages)"]
+        V0["📂 Data Sources"]
+        V1["🔍 Exploration"]
+        V2["📈 Adhoc Charts"]
+        V3["📊 Analytics"]
+        V4["📄 Reports"]
+        V5["📐 Architecture"]
     end
 
-    P1 --> PL
-    P1 --> TD
-    P2 --> QY
-    P3 --> CB
-    P4 --> RG
-    P4 --> GA
-    P4 --> DA
-    P5 --> OUT
-    P6 --> OUT
+    subgraph Components["app/components/ (4 modules)"]
+        C0["chart builder<br/>14 chart types"]
+        C1["charts"]
+        C2["filter panel"]
+        C3["sidebar"]
+    end
 
-    PL --> DB
-    PL --> CSV
-    TD --> PL
-    RG --> GA
-    RG --> DA
-    QY --> DB
-    CB --> DB
-    GA --> OUT
-    DA --> OUT
+    subgraph Core["app/core/ (6 modules)"]
+        K0["introspect"]
+        K1["pipeline"]
+        K2["query"]
+        K3["registry<br/>24 functions"]
+        K4["reports"]
+        K5["type detector"]
+    end
+
+    DB[("💾 SQLite data.db<br/>9 datasets")]
+
+    UI --> Components
+    UI --> Core
+    Core --> DB
+    Components --> Core

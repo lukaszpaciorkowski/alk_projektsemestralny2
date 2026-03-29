@@ -115,31 +115,21 @@ def generate_er_mermaid(engine: Engine) -> str:
         fk_from_cols = {fk[0] for fk in table_fks.get(tname, [])}
         pk_cols = {c[0] for c in cols if c[2] > 0}
 
-        # Decide which columns to show
-        if len(cols) <= _MAX_COLS_FULL:
-            shown = cols
-            hidden = 0
-        else:
-            # Always include PK and FK columns
-            priority = {c[0] for c in cols if c[2] > 0 or c[0] in fk_from_cols}
-            head = cols[:_MAX_COLS_SHOWN]
-            head_names = {c[0] for c in head}
-            extra = [c for c in cols if c[0] in priority and c[0] not in head_names]
-            shown = head + extra
-            hidden = len(cols) - len(shown)
+        shown = cols
+        hidden = 0
 
         safe = _safe_id(tname)
         lines.append(f"    {safe} {{")
         for col_name, col_type, is_pk in shown:
             type_str = _sqlite_type(col_type)
+            # Mermaid erDiagram requires attribute names to be single words
+            safe_col = re.sub(r"[^A-Za-z0-9_]", "_", col_name)
             suffix = ""
             if is_pk:
                 suffix = " PK"
             elif col_name in fk_from_cols:
                 suffix = " FK"
-            lines.append(f"        {type_str} {col_name}{suffix}")
-        if hidden:
-            lines.append(f"        %%  ... and {hidden} more columns")
+            lines.append(f"        {type_str} {safe_col}{suffix}")
         lines.append("    }")
 
     lines.append("")

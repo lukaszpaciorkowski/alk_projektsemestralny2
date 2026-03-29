@@ -1,40 +1,239 @@
 erDiagram
     _datasets {
         int id PK
-        string table_name UK
-        string display_name
-        string dataset_type
-        string enrichment_status
+        text table_name
+        text display_name
+        text dataset_type
+        text enrichment_status
         int row_count
         int col_count
-        string columns
-        string checksum
-        string uploaded_at
+        text columns
+        text checksum
+        text uploaded_at
+        text description
     }
-    ds_DYNAMIC {
-        any col_1
-        any col_2
-        any col_N
+    _reports {
+        int id PK
+        text title
+        text fig_json
+        text filters
+        text dataset_name
+        int row_count
+        int total_rows
+        int sort_order
+        text created_at
     }
-    ds_DYNAMIC_meds {
-        int encounter_id FK
-        string drug
-        string dosage
+    ds_data_raw_covid_hospital_icu_b80baf {
+        text Entity
+        int Year
+        float Daily_ICU_occupancy
+        float Daily_ICU_occupancy_per_million
+        float Daily_hospital_occupancy
+        float Daily_hospital_occupancy_per_million
+        float Weekly_new_ICU_admissions
+        float Weekly_new_ICU_admissions_per_million
+        float Weekly_new_hospital_admissions
+        float Weekly_new_hospital_admissions_per_million
     }
-    ds_DYNAMIC_diag {
-        int encounter_id FK
-        string icd9_code
-        string icd9_description
-        string icd9_category
+    ds_data_raw_diabetic_data_6e80fc {
+        int encounter_id
+        int patient_nbr
+        text race
+        text gender
+        text age
+        text weight
+        int admission_type_id
+        int discharge_disposition_id
+        int admission_source_id
+        int time_in_hospital
+        text payer_code
+        text medical_specialty
+        int num_lab_procedures
+        int num_procedures
+        int num_medications
+        int number_outpatient
+        int number_emergency
+        int number_inpatient
+        text diag_1
+        text diag_2
+        text diag_3
+        int number_diagnoses
+        text max_glu_serum
+        text A1Cresult
+        text metformin
+        text repaglinide
+        text nateglinide
+        text chlorpropamide
+        text glimepiride
+        text acetohexamide
+        text glipizide
+        text glyburide
+        text tolbutamide
+        text pioglitazone
+        text rosiglitazone
+        text acarbose
+        text miglitol
+        text troglitazone
+        text tolazamide
+        text examide
+        text citoglipton
+        text insulin
+        text glyburide_metformin
+        text glipizide_metformin
+        text glimepiride_pioglitazone
+        text metformin_rosiglitazone
+        text metformin_pioglitazone
+        text change
+        text diabetesMed
+        text readmitted
+    }
+    ds_data_raw_eurostat_causes_of_death_cf9664 {
+        text DATAFLOW
+        text LAST_UPDATE
+        text freq
+        text unit
+        text sex
+        text age
+        text icd10
+        text geo
+        float TIME_PERIOD
+        float OBS_VALUE
+        text OBS_FLAG
+        float CONF_STATUS
+    }
+    ds_data_raw_eurostat_hospital_discharges_94c22e {
+        text DATAFLOW
+        text LAST_UPDATE
+        text freq
+        text age
+        text indic_he
+        text unit
+        text sex
+        text icd10
+        text geo
+        float TIME_PERIOD
+        float OBS_VALUE
+        text OBS_FLAG
+        float CONF_STATUS
+    }
+    ds_data_raw_heart_disease_cleveland_47dc78 {
+        float age
+        float sex
+        float cp
+        float trestbps
+        float chol
+        float fbs
+        float restecg
+        float thalach
+        float exang
+        float oldpeak
+        float slope
+        text ca
+        text thal
+        int target
+    }
+    ds_data_raw_owid_causes_of_death_a52f72 {
+        text Entity
+        int Year
+        float Share_of_children_dying_in_first_5_years_globally__by_cause__IHME__2017__
+        float Deaths__IHME__2017__
+    }
+    ds_data_raw_owid_covid19_dda455 {
+        text iso_code
+        text continent
+        text location
+        text date
+        float total_cases
+        float new_cases
+        float new_cases_smoothed
+        float total_deaths
+        float new_deaths
+        float new_deaths_smoothed
+        float total_cases_per_million
+        float new_cases_per_million
+        float new_cases_smoothed_per_million
+        float total_deaths_per_million
+        float new_deaths_per_million
+        float new_deaths_smoothed_per_million
+        float reproduction_rate
+        float icu_patients
+        float icu_patients_per_million
+        float hosp_patients
+        float hosp_patients_per_million
+        float weekly_icu_admissions
+        float weekly_icu_admissions_per_million
+        float weekly_hosp_admissions
+        float weekly_hosp_admissions_per_million
+        float total_tests
+        float new_tests
+        float total_tests_per_thousand
+        float new_tests_per_thousand
+        float new_tests_smoothed
+        float new_tests_smoothed_per_thousand
+        float positive_rate
+        float tests_per_case
+        text tests_units
+        float total_vaccinations
+        float people_vaccinated
+        float people_fully_vaccinated
+        float total_boosters
+        float new_vaccinations
+        float new_vaccinations_smoothed
+        float total_vaccinations_per_hundred
+        float people_vaccinated_per_hundred
+        float people_fully_vaccinated_per_hundred
+        float total_boosters_per_hundred
+        float new_vaccinations_smoothed_per_million
+        float new_people_vaccinated_smoothed
+        float new_people_vaccinated_smoothed_per_hundred
+        float stringency_index
+        float population_density
+        float median_age
+        float aged_65_older
+        float aged_70_older
+        float gdp_per_capita
+        float extreme_poverty
+        float cardiovasc_death_rate
+        float diabetes_prevalence
+        float female_smokers
+        float male_smokers
+        float handwashing_facilities
+        float hospital_beds_per_thousand
+        float life_expectancy
+        float human_development_index
+        int population
+        float excess_mortality_cumulative_absolute
+        float excess_mortality_cumulative
+        float excess_mortality
+        float excess_mortality_cumulative_per_million
+    }
+    ds_data_raw_pima_indians_diabetes_188ec8 {
+        int Pregnancies
+        int Glucose
+        int BloodPressure
+        int SkinThickness
+        int Insulin
+        float BMI
+        float DiabetesPedigreeFunction
+        int Age
+        int Outcome
+    }
+    ds_data_raw_world_mortality_a924ca {
+        text iso3c
+        text country_name
+        int year
+        int time
+        text time_unit
+        float deaths
+    }
+    ds_data_raw_diabetic_data_6e80fc_diag {
+        int encounter_id
+        text icd9_code
         int diagnosis_position
+        text icd9_chapter
     }
-    diagnoses_lookup {
-        string icd9_code PK
-        string description
-        string category
+    ds_data_raw_diabetic_data_6e80fc_meds {
+        int encounter_id
+        text drug
+        text dosage_change
     }
-
-    _datasets ||--|| ds_DYNAMIC : "registered as table_name"
-    ds_DYNAMIC ||--o{ ds_DYNAMIC_meds : "enriched into (diabetes only)"
-    ds_DYNAMIC ||--o{ ds_DYNAMIC_diag : "enriched into (diabetes only)"
-    diagnoses_lookup ||--o{ ds_DYNAMIC_diag : "decoded via icd9_code"
