@@ -143,13 +143,18 @@ def render_filter_panel(
     active_filters: list[dict] = []
     surviving: list = []
 
+    removed_any = False
     for i, _ in enumerate(st.session_state[state_key]):
         row = _render_filter_row(i, meta, engine, table_name, key_prefix)
         if row is not None:
             active_filters.append(row)
             surviving.append(row)
+        else:
+            removed_any = True
 
     st.session_state[state_key] = surviving
+    if removed_any:
+        st.rerun()
 
     filter_objs = [Filter(f["column"], f["op"], f["value"]) for f in active_filters]
 

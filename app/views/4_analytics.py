@@ -165,7 +165,7 @@ n_active_filters = active_filter_count("analytics")
 _filter_label = (
     f"🔍 Data Filters ({n_active_filters} active)" if n_active_filters else "🔍 Data Filters"
 )
-with st.expander(_filter_label, expanded=n_active_filters > 0):
+with st.expander(_filter_label, expanded=False):
     filters = render_filter_panel(table_name, meta_raw, engine, key_prefix="analytics")
 
 if filters:

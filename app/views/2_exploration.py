@@ -103,7 +103,7 @@ columns = meta_raw  # list of dicts with name, dtype, etc.
 st.divider()
 n_active = active_filter_count("explore")
 expander_label = f"🔍 Filters ({n_active} active)" if n_active else "🔍 Filters"
-with st.expander(expander_label, expanded=n_active > 0):
+with st.expander(expander_label, expanded=False):
     filter_objs = render_filter_panel(table_name, columns, engine, key_prefix="explore")
 
 # Row count for pagination (separate from the in-panel count display)

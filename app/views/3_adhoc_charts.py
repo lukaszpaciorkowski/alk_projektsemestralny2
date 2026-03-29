@@ -115,7 +115,7 @@ n_adhoc_filters = active_filter_count("adhoc")
 _adhoc_label = (
     f"🔍 Data Filters ({n_adhoc_filters} active)" if n_adhoc_filters else "🔍 Data Filters"
 )
-with st.expander(_adhoc_label, expanded=n_adhoc_filters > 0):
+with st.expander(_adhoc_label, expanded=False):
     adhoc_filters = render_filter_panel(table_name, meta_raw, engine, key_prefix="adhoc")
 
 # ---- Chart Builder ----
