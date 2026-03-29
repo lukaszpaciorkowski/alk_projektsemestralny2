@@ -1,7 +1,8 @@
 """
-5_architecture.py — Architecture diagrams page for the Streamlit app.
+6_architecture.py — Architecture diagrams page for the Streamlit app.
 
 Features:
+- Regenerate Diagrams button (runs mmdc for all .mmd files)
 - Radio: ER Diagram | Pipeline Flow | App Architecture
 - Display rendered PNG via st.image
 - Collapsible description
@@ -11,6 +12,8 @@ Features:
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,8 +79,45 @@ init_state()
 st.title("📐 Architecture")
 st.markdown(
     "View the system architecture diagrams. PNG files are generated from Mermaid source "
-    "via `make diagrams` (requires `mmdc` — `npm install -g @mermaid-js/mermaid-cli`)."
+    "via `mmdc` (requires `npm install -g @mermaid-js/mermaid-cli`)."
 )
+
+# ── Regenerate button ─────────────────────────────────────────────────────────
+if st.button("🔄 Regenerate Diagrams", help="Re-render all Mermaid .mmd files to PNG"):
+    mmdc = shutil.which("mmdc")
+    if mmdc is None:
+        st.error(
+            "**mmdc not found.** Install Mermaid CLI with:\n"
+            "```\nnpm install -g @mermaid-js/mermaid-cli\n```"
+        )
+    else:
+        rendered = 0
+        errors: list[str] = []
+        with st.spinner("Rendering diagrams…"):
+            for name, info in DIAGRAM_INFO.items():
+                mmd: Path = info["mmd"]
+                png: Path = info["png"]
+                if not mmd.exists():
+                    errors.append(f"{name}: source file `{mmd}` not found")
+                    continue
+                result = subprocess.run(
+                    [mmdc, "-i", str(mmd), "-o", str(png)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    rendered += 1
+                else:
+                    errors.append(
+                        f"{name}: mmdc exited {result.returncode} — "
+                        f"{result.stderr.strip() or result.stdout.strip()}"
+                    )
+        if rendered:
+            st.success(f"✅ Rendered {rendered} diagram{'s' if rendered != 1 else ''}.")
+        for err in errors:
+            st.error(err)
+        if rendered:
+            st.rerun()
 
 selected = st.radio(
     "Select diagram",
@@ -103,10 +143,9 @@ if png_path.exists():
         mime="image/png",
     )
 else:
-    st.warning(
-        f"PNG not found at `{png_path}`. "
-        "Generate diagrams by running:\n```\nmake diagrams\n```\n"
-        "(requires `mmdc` — `npm install -g @mermaid-js/mermaid-cli`)"
+    st.info(
+        f"PNG not generated yet — click **🔄 Regenerate Diagrams** above.\n\n"
+        f"_(source: `{mmd_path}`)_"
     )
 
 # ---- Description ----
