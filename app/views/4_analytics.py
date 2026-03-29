@@ -264,6 +264,6 @@ if run_clicked:
 
         except EnrichmentRequiredError as exc:
             st.warning(str(exc))
-            st.page_link("pages/1_data_sources.py", label="Go to Data Sources →", icon="📂")
+            st.page_link("views/1_data_sources.py", label="Go to Data Sources →", icon="📂")
         except Exception as exc:
             st.error(f"Analysis failed: {exc}")
