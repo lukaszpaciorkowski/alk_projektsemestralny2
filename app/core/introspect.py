@@ -60,87 +60,143 @@ def generate_er_mermaid(engine: Engine) -> str:
     """
     Generate a Mermaid erDiagram from the live SQLite schema.
 
-    - Introspects all tables via sqlite_master + PRAGMA table_info/foreign_key_list
-    - For tables with >_MAX_COLS_FULL columns, shows first _MAX_COLS_SHOWN plus
-      any PK/FK columns not already included, then appends a comment with the count
-    - Emits relationship lines for FK constraints
-    - Groups tables: registry (_datasets, _reports) first, then ds_* tables
+    Column display:
+    - Tables with <= _MAX_COLS_SHOWN columns: show all columns
+    - Wider tables: show first _MAX_COLS_SHOWN columns, always including PK
+      and FK columns, plus a "%% +N more columns" comment
+
+    Relationships (all logical — SQLite flat tables have no FK constraints):
+    - _datasets ||--o{ each registered ds_* table  (registry → data)
+    - ds_*_diag  }o--|| parent ds_* table           (enrichment → base)
+    - ds_*_meds  }o--|| parent ds_* table           (enrichment → base)
+
+    Groups (via %% section comments):
+    - System tables: _datasets, _reports
+    - Data tables:   ds_* base tables
+    - Enrichment:    *_diag, *_meds
     """
+    table_name_set: set[str]
+    table_cols: dict[str, list[tuple]]   # tname → [(col_name, col_type, is_pk)]
+    table_fks: dict[str, list[tuple]]    # tname → [(from_col, to_table, to_col)]
+    registered_ds: set[str]              # table_name values from _datasets
+
     with engine.connect() as conn:
-        table_rows = conn.execute(
+        rows = conn.execute(
             text(
                 "SELECT name FROM sqlite_master "
                 "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
                 "ORDER BY name"
             )
         ).fetchall()
-        table_names: list[str] = [r[0] for r in table_rows]
+        all_tables: list[str] = [r[0] for r in rows]
+        table_name_set = set(all_tables)
 
-        # Collect columns and FKs per table
-        table_cols: dict[str, list[tuple]] = {}   # name → [(name, type, pk)]
-        table_fks: dict[str, list[tuple]] = {}    # name → [(from_col, to_table, to_col)]
-
-        for tname in table_names:
-            cols = conn.execute(
-                text(f"PRAGMA table_info(\"{tname}\")")
-            ).fetchall()
-            # (cid, name, type, notnull, dflt_value, pk)
+        table_cols = {}
+        table_fks = {}
+        for tname in all_tables:
+            cols = conn.execute(text(f'PRAGMA table_info("{tname}")')).fetchall()
             table_cols[tname] = [(c[1], c[2], c[5]) for c in cols]
-
-            fks = conn.execute(
-                text(f"PRAGMA foreign_key_list(\"{tname}\")")
-            ).fetchall()
-            # (id, seq, table, from, to, on_update, on_delete, match)
+            fks = conn.execute(text(f'PRAGMA foreign_key_list("{tname}")')).fetchall()
             table_fks[tname] = [(f[3], f[2], f[4]) for f in fks]
 
-    # Order: registry tables first, then enrichment, then ds_*
-    def _sort_key(n: str) -> tuple:
-        if n == "_datasets":
-            return (0, n)
-        if n == "_reports":
-            return (1, n)
-        if n.endswith("_diag") or n.endswith("_meds"):
-            return (3, n)
-        if n.startswith("ds_"):
-            return (2, n)
-        return (4, n)
+        # Read registered dataset table names for logical _datasets → ds_* links
+        try:
+            ds_reg = conn.execute(text("SELECT table_name FROM _datasets")).fetchall()
+            registered_ds = {r[0] for r in ds_reg} & table_name_set
+        except Exception:
+            registered_ds = set()
 
-    ordered = sorted(table_names, key=_sort_key)
+    # ---- Classify tables into groups ----
+    system_tables = [t for t in all_tables if t.startswith("_")]
+    enrichment_tables = [
+        t for t in all_tables
+        if t.startswith("ds_") and (t.endswith("_diag") or t.endswith("_meds"))
+    ]
+    enrichment_set = set(enrichment_tables)
+    base_ds_tables = [
+        t for t in all_tables
+        if t.startswith("ds_") and t not in enrichment_set
+    ]
+
+    # Ordered: system → base ds_* → enrichment
+    ordered = system_tables + base_ds_tables + enrichment_tables
+
+    # ---- Helper: emit one entity block ----
+    def _entity_block(tname: str) -> list[str]:
+        cols = table_cols[tname]
+        fk_from = {fk[0] for fk in table_fks.get(tname, [])}
+        pk_cols = {c[0] for c in cols if c[2] > 0}
+
+        if len(cols) <= _MAX_COLS_SHOWN:
+            shown = cols
+            hidden = 0
+        else:
+            priority = pk_cols | fk_from
+            head = cols[:_MAX_COLS_SHOWN]
+            head_names = {c[0] for c in head}
+            extra = [c for c in cols if c[0] in priority and c[0] not in head_names]
+            shown = head + extra
+            hidden = len(cols) - len(shown)
+
+        block = [f"    {_safe_id(tname)} {{"]
+        for col_name, col_type, is_pk in shown:
+            safe_col = re.sub(r"[^A-Za-z0-9_]", "_", col_name)
+            suffix = " PK" if is_pk else (" FK" if col_name in fk_from else "")
+            block.append(f"        {_sqlite_type(col_type)} {safe_col}{suffix}")
+        if hidden:
+            block.append(f"        %% +{hidden} more columns")
+        block.append("    }")
+        return block
 
     lines: list[str] = ["erDiagram"]
 
-    # ---- Entity blocks ----
-    for tname in ordered:
-        cols = table_cols[tname]
-        fk_from_cols = {fk[0] for fk in table_fks.get(tname, [])}
-        pk_cols = {c[0] for c in cols if c[2] > 0}
+    # ---- System tables group ----
+    lines.append("    %% == System tables ==")
+    for tname in system_tables:
+        lines.extend(_entity_block(tname))
 
-        shown = cols
-        hidden = 0
+    # ---- Base dataset tables group ----
+    lines.append("    %% == Data tables (ds_*) ==")
+    for tname in base_ds_tables:
+        lines.extend(_entity_block(tname))
 
-        safe = _safe_id(tname)
-        lines.append(f"    {safe} {{")
-        for col_name, col_type, is_pk in shown:
-            type_str = _sqlite_type(col_type)
-            # Mermaid erDiagram requires attribute names to be single words
-            safe_col = re.sub(r"[^A-Za-z0-9_]", "_", col_name)
-            suffix = ""
-            if is_pk:
-                suffix = " PK"
-            elif col_name in fk_from_cols:
-                suffix = " FK"
-            lines.append(f"        {type_str} {safe_col}{suffix}")
-        lines.append("    }")
+    # ---- Enrichment tables group ----
+    if enrichment_tables:
+        lines.append("    %% == Enrichment tables ==")
+        for tname in enrichment_tables:
+            lines.extend(_entity_block(tname))
 
     lines.append("")
 
-    # ---- Relationship lines ----
+    # ---- Relationships ----
+    lines.append("    %% -- SQLite FK constraints --")
+    found_fk = False
     for tname in ordered:
-        for from_col, to_table, to_col in table_fks.get(tname, []):
-            if to_table in table_names:
-                a = _safe_id(tname)
-                b = _safe_id(to_table)
+        for from_col, to_table, _to_col in table_fks.get(tname, []):
+            if to_table in table_name_set:
+                a, b = _safe_id(tname), _safe_id(to_table)
                 lines.append(f'    {a} }}o--|| {b} : "{from_col}"')
+                found_fk = True
+    if not found_fk:
+        lines.append("    %% (none — SQLite tables use no FK constraints)")
+
+    lines.append("    %% -- Logical: registry → data tables --")
+    for ds_tname in base_ds_tables:
+        if ds_tname in registered_ds:
+            lines.append(
+                f'    _datasets ||--o{{ {_safe_id(ds_tname)} : "table_name"'
+            )
+
+    lines.append("    %% -- Logical: enrichment → base table --")
+    for etname in enrichment_tables:
+        # strip trailing _diag / _meds to find parent
+        for suffix in ("_diag", "_meds"):
+            if etname.endswith(suffix):
+                parent = etname[: -len(suffix)]
+                if parent in table_name_set:
+                    a, b = _safe_id(etname), _safe_id(parent)
+                    lines.append(f'    {a} }}o--|| {b} : "encounter_id"')
+                break
 
     return "\n".join(lines)
 
