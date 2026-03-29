@@ -1,0 +1,31 @@
+graph LR
+    subgraph UI ["🖥️ Streamlit App (app/)"]
+        P1["📂 Data Sources"]
+        P2["🔍 Exploration"]
+        P3["📊 Analytics"]
+        P4["📄 Reports"]
+        P5["📐 Architecture"]
+    end
+    subgraph Backend ["⚙️ Scripts / Query Layer"]
+        QS["03_query.py"]
+        VZ["04_visualize.py"]
+        IG["01_ingest.py\n02_load.py"]
+        DG["docs/diagrams/*.png"]
+    end
+    subgraph Storage ["💾 Storage"]
+        DB[("SQLite DB\ndata/diabetes.db")]
+        CSV["data/raw/\ndiabetic_data.csv"]
+        OUT["outputs/figures/\noutputs/report/"]
+    end
+
+    P1 --> IG
+    P2 --> QS
+    P3 --> QS
+    P3 --> VZ
+    P4 --> VZ
+    P5 --> DG
+
+    IG --> CSV
+    IG --> DB
+    QS --> DB
+    VZ --> OUT

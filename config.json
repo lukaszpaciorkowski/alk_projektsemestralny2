@@ -1,0 +1,25 @@
+{
+  "pipeline": {
+    "null_threshold": 0.3,
+    "outlier_zscore": 3.0,
+    "age_bins": [0, 30, 50, 70, 100],
+    "age_labels": ["0-30", "30-50", "50-70", "70+"],
+    "readmission_binary": false,
+    "top_n_diagnoses": 10,
+    "palette": "viridis"
+  },
+  "database": {
+    "engine": "sqlite",
+    "path": "data/diabetes.db"
+  },
+  "output": {
+    "figures_dir": "outputs/figures",
+    "report_dir": "outputs/report",
+    "dpi": 150
+  },
+  "data": {
+    "raw_csv": "data/raw/diabetic_data.csv",
+    "icd9_csv": "data/raw/icd9_codes.csv",
+    "processed_csv": "data/processed/diabetic_clean.csv"
+  }
+}

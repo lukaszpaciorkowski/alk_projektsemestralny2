@@ -1,0 +1,50 @@
+erDiagram
+    patients {
+        int patient_id PK
+        string race
+        string gender
+        string age_group
+    }
+    admission_types {
+        int id PK
+        string description
+    }
+    discharge_types {
+        int id PK
+        string description
+    }
+    admissions {
+        int encounter_id PK
+        int patient_id FK
+        int admission_type_id FK
+        int discharge_type_id FK
+        int time_in_hospital
+        int num_lab_procedures
+        int num_medications
+        int num_diagnoses
+        string hba1c_result
+        string readmission
+    }
+    diagnoses_lookup {
+        string icd9_code PK
+        string description
+        string category
+    }
+    diagnosis_encounters {
+        int id PK
+        int encounter_id FK
+        string icd9_code FK
+        int diagnosis_position
+    }
+    medications {
+        int id PK
+        int encounter_id FK
+        string drug_name
+        string change_indicator
+    }
+    patients ||--o{ admissions : "has"
+    admission_types ||--o{ admissions : "typed as"
+    discharge_types ||--o{ admissions : "discharged as"
+    admissions ||--o{ medications : "prescribed"
+    admissions ||--o{ diagnosis_encounters : "coded with"
+    diagnoses_lookup ||--o{ diagnosis_encounters : "used in"

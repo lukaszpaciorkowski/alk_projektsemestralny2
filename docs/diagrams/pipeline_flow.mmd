@@ -1,0 +1,11 @@
+flowchart TD
+    A["📥 CSV Download\ndiabetic_data.csv"] --> B["✅ Validate\nnull_threshold · outlier_zscore"]
+    B --> C["🗄️ Load to SQLite\n3NF schema · indexes"]
+    C --> D["🔍 SQL Queries\nGROUP BY · JOIN · WINDOW"]
+    D --> E["📈 Statistical Analysis\npandas · scipy.stats"]
+    E --> F["📊 Visualizations\nplotly · seaborn · matplotlib"]
+    F --> G["📄 Report\nHTML · PDF via fpdf2"]
+
+    B -.->|"null_threshold=0.3\noutlier_zscore=3.0"| B
+    D -.->|"age_bins\nreadmission_binary"| D
+    F -.->|"top_n_diagnoses\npalette"| F
