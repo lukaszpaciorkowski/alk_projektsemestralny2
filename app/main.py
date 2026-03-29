@@ -17,11 +17,11 @@ st.set_page_config(
 )
 
 pages = [
-    st.Page("app/pages/1_data_sources.py", title="Data Sources", icon="📂"),
-    st.Page("app/pages/2_exploration.py", title="Data Exploration", icon="🔍"),
-    st.Page("app/pages/3_analytics.py", title="Analytics", icon="📊"),
-    st.Page("app/pages/4_reports.py", title="Reports", icon="📄"),
-    st.Page("app/pages/5_architecture.py", title="Architecture", icon="📐"),
+    st.Page("pages/1_data_sources.py", title="Data Sources", icon="📂"),
+    st.Page("pages/2_exploration.py", title="Data Exploration", icon="🔍"),
+    st.Page("pages/3_analytics.py", title="Analytics", icon="📊"),
+    st.Page("pages/4_reports.py", title="Reports", icon="📄"),
+    st.Page("pages/5_architecture.py", title="Architecture", icon="📐"),
 ]
 
 pg = st.navigation(pages)
