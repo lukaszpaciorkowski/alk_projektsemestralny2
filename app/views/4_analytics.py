@@ -1,10 +1,9 @@
 """
 4_analytics.py — Registry-driven Analytics page.
 
-Pattern:
-  1. Button click → set st.session_state["selected_fn"]
-               → for parameterless fns: also run analysis and store result
-  2. OUTSIDE button block → read session state → render params / Run button / results
+Function selection uses st.radio (persistent across reruns), not st.button.
+Two radio groups (Generic / Specialised) with mutual-exclusion via pre-render
+session-state manipulation so only one group shows a selection at a time.
 """
 
 from __future__ import annotations
@@ -31,9 +30,6 @@ from app.core.registry import REGISTRY, AnalyticsFunction, get_functions_for
 from app.core.type_detector import dataset_type_icon, dataset_type_label
 from app.state import add_to_report, init_state, set_active_dataset
 
-PAGE_SIZE = 50
-COLS_PER_ROW = 4
-
 
 def _get_engine():
     return get_engine(DB_PATH)
@@ -51,16 +47,13 @@ def _col_names_by_dtype(meta: list[dict], dtype_filter: str | None) -> list[str]
 
 def _render_param_widget(param, meta: list[dict]) -> Any:
     label = param.label or param.name.replace("_", " ").capitalize()
-
     if param.widget == "select":
-        return st.selectbox(label, param.options, index=param.options.index(param.default) if param.default in param.options else 0)
-
+        return st.selectbox(label, param.options,
+                            index=param.options.index(param.default) if param.default in param.options else 0)
     if param.widget == "bool":
         return st.checkbox(label, value=bool(param.default))
-
     if param.widget == "int":
         return st.number_input(label, value=int(param.default), min_value=1, max_value=500, step=1)
-
     if param.widget in ("select_column", "multiselect_column"):
         cols = _col_names_by_dtype(meta, param.dtype_filter)
         if not cols:
@@ -70,7 +63,6 @@ def _render_param_widget(param, meta: list[dict]) -> Any:
         if param.widget == "multiselect_column":
             return st.multiselect(label, cols, default=[default_val] if default_val else [])
         return st.selectbox(label, cols, index=cols.index(default_val) if default_val in cols else 0)
-
     return param.default
 
 
@@ -79,14 +71,17 @@ def _load_table(engine, table_name: str) -> pd.DataFrame:
         return pd.read_sql(sql_text(f"SELECT * FROM [{table_name}]"), conn)
 
 
-def _run_fn(fn: AnalyticsFunction, df: pd.DataFrame, meta: list[dict], engine, table_name: str, enrichment_status: str, params: dict) -> tuple:
-    """Execute an analytics function; returns (result_df, fig) or raises."""
+def _execute_fn(fn: AnalyticsFunction, engine, table_name: str, meta: list[dict],
+                enrichment_status: str, params: dict) -> dict:
+    """Load table, run fn, return result dict for session state storage."""
+    df = _load_table(engine, table_name)
+    call_params = dict(params)
     if fn.requires_enrichment:
-        params = dict(params)
-        params["con"] = engine
-        params["table_name"] = table_name
-        params["enrichment_status"] = enrichment_status
-    return fn.fn(df, meta, **params)
+        call_params["con"] = engine
+        call_params["table_name"] = table_name
+        call_params["enrichment_status"] = enrichment_status
+    result_df, fig = fn.fn(df, meta, **call_params)
+    return {"fn_id": fn.id, "fn_label": fn.label, "result_df": result_df, "fig": fig}
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +108,7 @@ if not datasets:
     st.warning("No datasets imported yet. Go to **Data Sources** to upload a CSV.")
     st.stop()
 
-# ── Dataset Selector ────────────────────────────────────────────────────────
+# ── Dataset Selector ──────────────────────────────────────────────────────────
 ds_options = {
     f"{dataset_type_icon(d['dataset_type'])} {d['display_name']} "
     f"({d['row_count']:,} rows)": d
@@ -122,8 +117,8 @@ ds_options = {
 
 active_name = st.session_state.get("active_dataset_name", "")
 default_idx = 0
-for idx, label in enumerate(ds_options):
-    if active_name and active_name in label:
+for idx, lbl in enumerate(ds_options):
+    if active_name and active_name in lbl:
         default_idx = idx
         break
 
@@ -145,78 +140,114 @@ if st.session_state.get("active_dataset") != table_name:
         enrichment_status=enrichment_status,
         meta=meta_raw,
     )
-    # Clear stale analytics state when dataset changes
-    st.session_state["selected_fn"] = None
-    st.session_state["analytics_result"] = None
-    st.session_state["analytics_error"] = None
+    # Reset all analytics state when dataset changes
+    for key in ("_gen_radio", "_spec_radio", "_prev_gen", "_prev_spec",
+                "selected_fn", "analytics_result", "analytics_error"):
+        st.session_state.pop(key, None)
     st.rerun()
 
-# ── Function Grid ────────────────────────────────────────────────────────────
+# ── Build function lists ───────────────────────────────────────────────────────
 functions = get_functions_for(dataset_type)
 generic_fns = [f for f in functions if f.scope == "generic"]
 specialized_fns = [f for f in functions if f.scope != "generic"]
 
+needs_enrichment = {f.id for f in specialized_fns if f.requires_enrichment}
+disabled_ids = needs_enrichment if enrichment_status != "done" else set()
+active_spec_fns = [f for f in specialized_fns if f.id not in disabled_ids]
+
+gen_labels = [f.label for f in generic_fns]
+spec_labels = [f.label for f in active_spec_fns]
+gen_label_to_fn = {f.label: f for f in generic_fns}
+spec_label_to_fn = {f.label: f for f in active_spec_fns}
+
+# ── Mutual-exclusion: detect which radio changed, update selected_fn ──────────
+# Streamlit has already written the new radio value into session_state before
+# this code runs. We compare against what we recorded on the previous pass.
+
+curr_gen = st.session_state.get("_gen_radio")    # current value of gen radio
+curr_spec = st.session_state.get("_spec_radio")  # current value of spec radio
+prev_gen = st.session_state.get("_prev_gen")
+prev_spec = st.session_state.get("_prev_spec")
+
+if curr_gen != prev_gen and curr_gen is not None:
+    # User just picked something in the Generic group
+    fn = gen_label_to_fn.get(curr_gen)
+    if fn:
+        st.session_state["selected_fn"] = fn.id
+        st.session_state["analytics_result"] = None
+        st.session_state["analytics_error"] = None
+        # Deselect spec group BEFORE it renders
+        st.session_state["_spec_radio"] = None
+        st.session_state["_prev_spec"] = None
+    st.session_state["_prev_gen"] = curr_gen
+
+    # Parameterless → run immediately (result is in session_state for this render)
+    if fn and not fn.params:
+        try:
+            st.session_state["analytics_result"] = _execute_fn(
+                fn, engine, table_name, meta_raw, enrichment_status, {}
+            )
+        except EnrichmentRequiredError as exc:
+            st.session_state["analytics_error"] = ("enrichment", str(exc))
+        except Exception as exc:
+            st.session_state["analytics_error"] = ("error", str(exc))
+
+elif curr_spec != prev_spec and curr_spec is not None:
+    # User just picked something in the Specialised group
+    fn = spec_label_to_fn.get(curr_spec)
+    if fn:
+        st.session_state["selected_fn"] = fn.id
+        st.session_state["analytics_result"] = None
+        st.session_state["analytics_error"] = None
+        # Deselect gen group BEFORE it renders
+        st.session_state["_gen_radio"] = None
+        st.session_state["_prev_gen"] = None
+    st.session_state["_prev_spec"] = curr_spec
+
+    if fn and not fn.params:
+        try:
+            st.session_state["analytics_result"] = _execute_fn(
+                fn, engine, table_name, meta_raw, enrichment_status, {}
+            )
+        except EnrichmentRequiredError as exc:
+            st.session_state["analytics_error"] = ("enrichment", str(exc))
+        except Exception as exc:
+            st.session_state["analytics_error"] = ("error", str(exc))
+
+# ── Render radio groups ────────────────────────────────────────────────────────
 st.divider()
 st.subheader("Available Analyses")
 
-needs_enrichment = {f.id for f in specialized_fns if f.requires_enrichment}
-disabled_ids = needs_enrichment if enrichment_status != "done" else set()
-
 if disabled_ids:
-    missing_labels = ", ".join(REGISTRY[fid].label for fid in disabled_ids if fid in REGISTRY)
-    st.warning(f"**{missing_labels}** require enrichment. Run enrichment on the **Data Sources** page.")
-
-
-def _fn_button_grid(fns: list[AnalyticsFunction]) -> None:
-    """Render button grid. On click: set selected_fn; run parameterless fns immediately."""
-    for row_start in range(0, len(fns), COLS_PER_ROW):
-        row_fns = fns[row_start:row_start + COLS_PER_ROW]
-        btn_cols = st.columns(COLS_PER_ROW)
-        for bcol, fn in zip(btn_cols, row_fns):
-            with bcol:
-                is_active = st.session_state.get("selected_fn") == fn.id
-                disabled = fn.id in disabled_ids
-                label_text = fn.label + (" ⚠" if disabled else "")
-                if st.button(
-                    label_text,
-                    key=f"fn_{fn.id}",
-                    use_container_width=True,
-                    type="primary" if is_active else "secondary",
-                    help=fn.description + (" (requires enrichment)" if disabled else ""),
-                    disabled=disabled,
-                ):
-                    st.session_state["selected_fn"] = fn.id
-                    st.session_state["analytics_result"] = None
-                    st.session_state["analytics_error"] = None
-
-                    # Parameterless functions: run immediately so result is
-                    # available on the very next render pass (no second rerun needed).
-                    if not fn.params:
-                        try:
-                            df = _load_table(engine, table_name)
-                            result_df, fig = _run_fn(fn, df, meta_raw, engine, table_name, enrichment_status, {})
-                            st.session_state["analytics_result"] = {
-                                "fn_id": fn.id,
-                                "fn_label": fn.label,
-                                "result_df": result_df,
-                                "fig": fig,
-                            }
-                        except EnrichmentRequiredError as exc:
-                            st.session_state["analytics_error"] = ("enrichment", str(exc))
-                        except Exception as exc:
-                            st.session_state["analytics_error"] = ("error", str(exc))
-
+    missing = ", ".join(REGISTRY[fid].label for fid in disabled_ids if fid in REGISTRY)
+    st.warning(f"**{missing}** require enrichment. Run enrichment on the **Data Sources** page.")
 
 st.markdown("**GENERIC — works on any dataset**")
-_fn_button_grid(generic_fns)
+st.radio(
+    "generic_analyses",
+    gen_labels,
+    key="_gen_radio",
+    index=None,
+    label_visibility="collapsed",
+)
 
 if specialized_fns:
     icon = dataset_type_icon(dataset_type)
-    label = dataset_type_label(dataset_type)
-    st.markdown(f"**SPECIALISED — {icon} {label}**")
-    _fn_button_grid(specialized_fns)
+    lbl = dataset_type_label(dataset_type)
+    st.markdown(f"**SPECIALISED — {icon} {lbl}**")
+    if active_spec_fns:
+        st.radio(
+            "specialised_analyses",
+            spec_labels,
+            key="_spec_radio",
+            index=None,
+            label_visibility="collapsed",
+        )
+    unavailable = [f for f in specialized_fns if f.id in disabled_ids]
+    if unavailable:
+        st.caption("Requires enrichment: " + ", ".join(f.label for f in unavailable))
 
-# ── Parameters + Run ─────────────────────────────────────────────────────────
+# ── Selected function: params + run ───────────────────────────────────────────
 selected_fn_id = st.session_state.get("selected_fn")
 
 if not selected_fn_id:
@@ -225,9 +256,7 @@ if not selected_fn_id:
 
 selected_fn = REGISTRY.get(selected_fn_id)
 if not selected_fn:
-    # Function no longer valid (e.g. switched dataset type)
-    st.session_state["selected_fn"] = None
-    st.session_state["analytics_result"] = None
+    st.session_state.pop("selected_fn", None)
     st.info("Select an analysis above to get started.")
     st.stop()
 
@@ -235,7 +264,7 @@ st.divider()
 st.markdown(f"**Selected: {selected_fn.label}**")
 st.caption(selected_fn.description)
 
-# Collect params from UI (only for parameterized functions)
+# Parameterized functions: show widgets + Run button
 collected_params: dict[str, Any] = {}
 if selected_fn.params:
     with st.container(border=True):
@@ -248,14 +277,9 @@ if selected_fn.params:
     if st.button("Run Analysis", type="primary", use_container_width=True):
         with st.spinner("Running…"):
             try:
-                df = _load_table(engine, table_name)
-                result_df, fig = _run_fn(selected_fn, df, meta_raw, engine, table_name, enrichment_status, collected_params)
-                st.session_state["analytics_result"] = {
-                    "fn_id": selected_fn_id,
-                    "fn_label": selected_fn.label,
-                    "result_df": result_df,
-                    "fig": fig,
-                }
+                st.session_state["analytics_result"] = _execute_fn(
+                    selected_fn, engine, table_name, meta_raw, enrichment_status, collected_params
+                )
                 st.session_state["analytics_error"] = None
             except EnrichmentRequiredError as exc:
                 st.session_state["analytics_error"] = ("enrichment", str(exc))
@@ -264,7 +288,7 @@ if selected_fn.params:
                 st.session_state["analytics_error"] = ("error", str(exc))
                 st.session_state["analytics_result"] = None
 
-# ── Render persisted result ───────────────────────────────────────────────────
+# ── Render persisted result ────────────────────────────────────────────────────
 analytics_error = st.session_state.get("analytics_error")
 analytics_result = st.session_state.get("analytics_result")
 
