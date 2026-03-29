@@ -17,6 +17,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.components.chart_builder import build_chart
+from app.components.filter_panel import active_filter_count, render_filter_panel
 from app.components.sidebar import render_sidebar
 from app.core.pipeline import DB_PATH, get_engine, list_datasets
 from app.core.type_detector import dataset_type_icon
@@ -104,6 +105,15 @@ if st.session_state.get("active_dataset") != table_name:
 all_cols = [c["name"] for c in meta_raw]
 numeric_cols = [c["name"] for c in meta_raw if _col_category(c.get("dtype", "")) == "numeric"]
 cat_cols = [c["name"] for c in meta_raw if _col_category(c.get("dtype", "")) == "categorical"]
+
+# ---- Filter Panel ----
+st.divider()
+n_adhoc_filters = active_filter_count("adhoc")
+_adhoc_label = (
+    f"🔍 Data Filters ({n_adhoc_filters} active)" if n_adhoc_filters else "🔍 Data Filters"
+)
+with st.expander(_adhoc_label, expanded=n_adhoc_filters > 0):
+    adhoc_filters = render_filter_panel(table_name, meta_raw, engine, key_prefix="adhoc")
 
 # ---- Chart Builder ----
 st.divider()
@@ -210,6 +220,7 @@ if plot_clicked and x_col:
             agg_func=agg_func,
             bins=bins,
             location_mode=location_mode,
+            filters=adhoc_filters,
         )
 
     st.session_state.setdefault("adhoc_chart_history", [])

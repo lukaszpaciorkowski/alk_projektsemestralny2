@@ -19,6 +19,7 @@ from sqlalchemy import text as sql_text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from app.components.filter_panel import active_filter_count, render_filter_panel
 from app.components.sidebar import render_sidebar
 from app.core.pipeline import (
     DB_PATH,
@@ -26,6 +27,7 @@ from app.core.pipeline import (
     get_engine,
     list_datasets,
 )
+from app.core.query import Filter, fetch_table
 from app.core.registry import REGISTRY, AnalyticsFunction, get_functions_for
 from app.core.type_detector import dataset_type_icon, dataset_type_label
 from app.state import add_to_report, init_state, set_active_dataset
@@ -66,22 +68,31 @@ def _render_param_widget(param, meta: list[dict]) -> Any:
     return param.default
 
 
-def _load_table(engine, table_name: str) -> pd.DataFrame:
-    with engine.connect() as conn:
-        return pd.read_sql(sql_text(f"SELECT * FROM [{table_name}]"), conn)
-
-
-def _execute_fn(fn: AnalyticsFunction, engine, table_name: str, meta: list[dict],
-                enrichment_status: str, params: dict) -> dict:
-    """Load table, run fn, return result dict for session state storage."""
-    df = _load_table(engine, table_name)
+def _execute_fn(
+    fn: AnalyticsFunction,
+    engine,
+    table_name: str,
+    meta: list[dict],
+    enrichment_status: str,
+    params: dict,
+    filters: list[Filter] | None = None,
+) -> dict:
+    """Load (filtered) table, run fn, return result dict for session state storage."""
+    df = fetch_table(table_name, engine, filters=filters or [], limit=500_000)
     call_params = dict(params)
     if fn.requires_enrichment:
         call_params["con"] = engine
         call_params["table_name"] = table_name
         call_params["enrichment_status"] = enrichment_status
     result_df, fig = fn.fn(df, meta, **call_params)
-    return {"fn_id": fn.id, "fn_label": fn.label, "result_df": result_df, "fig": fig}
+    return {
+        "fn_id": fn.id,
+        "fn_label": fn.label,
+        "result_df": result_df,
+        "fig": fig,
+        "df_rows": len(df),
+        "n_filters": len(filters) if filters else 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +159,21 @@ if st.session_state.get("active_dataset") != table_name:
         st.session_state.pop(key, None)
     st.rerun()
 
+# ── Filter Panel ──────────────────────────────────────────────────────────────
+# Rendered BEFORE mutual-exclusion logic so parameterless fns get current filters.
+n_active_filters = active_filter_count("analytics")
+_filter_label = (
+    f"🔍 Data Filters ({n_active_filters} active)" if n_active_filters else "🔍 Data Filters"
+)
+with st.expander(_filter_label, expanded=n_active_filters > 0):
+    filters = render_filter_panel(table_name, meta_raw, engine, key_prefix="analytics")
+
+if filters:
+    full_count = selected_ds["row_count"] or 0
+    st.caption(
+        f"Analysis will run on the filtered subset of **{full_count:,}** total rows."
+    )
+
 # ── Build function lists ───────────────────────────────────────────────────────
 functions = get_functions_for(dataset_type)
 generic_fns = [f for f in functions if f.scope == "generic"]
@@ -187,7 +213,7 @@ if curr_gen != prev_gen and curr_gen is not None:
     if fn and not fn.params:
         try:
             st.session_state["analytics_result"] = _execute_fn(
-                fn, engine, table_name, meta_raw, enrichment_status, {}
+                fn, engine, table_name, meta_raw, enrichment_status, {}, filters=filters
             )
         except EnrichmentRequiredError as exc:
             st.session_state["analytics_error"] = ("enrichment", str(exc))
@@ -209,7 +235,7 @@ elif curr_spec != prev_spec and curr_spec is not None:
     if fn and not fn.params:
         try:
             st.session_state["analytics_result"] = _execute_fn(
-                fn, engine, table_name, meta_raw, enrichment_status, {}
+                fn, engine, table_name, meta_raw, enrichment_status, {}, filters=filters
             )
         except EnrichmentRequiredError as exc:
             st.session_state["analytics_error"] = ("enrichment", str(exc))
@@ -280,7 +306,8 @@ if selected_fn.params:
         with st.spinner("Running…"):
             try:
                 st.session_state["analytics_result"] = _execute_fn(
-                    selected_fn, engine, table_name, meta_raw, enrichment_status, collected_params
+                    selected_fn, engine, table_name, meta_raw, enrichment_status,
+                    collected_params, filters=filters,
                 )
                 st.session_state["analytics_error"] = None
             except EnrichmentRequiredError as exc:
@@ -305,8 +332,16 @@ elif analytics_result and analytics_result.get("fn_id") == selected_fn_id:
     result_df = analytics_result["result_df"]
     fig = analytics_result["fig"]
     fn_label = analytics_result["fn_label"]
+    df_rows = analytics_result.get("df_rows", 0)
+    n_filters_used = analytics_result.get("n_filters", 0)
+    full_count = selected_ds["row_count"] or 0
 
     st.divider()
+    if n_filters_used:
+        st.caption(
+            f"Analyzed **{df_rows:,}** of {full_count:,} rows "
+            f"({n_filters_used} filter(s) applied)"
+        )
     view_mode = st.radio("View as", ["Chart", "Table"], horizontal=True, key="analytics_view_mode")
 
     if fig is not None and view_mode == "Chart":

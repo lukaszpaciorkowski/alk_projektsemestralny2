@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from app.components.filter_panel import active_filter_count, render_filter_panel
 from app.components.sidebar import render_sidebar
 from app.core.pipeline import DB_PATH, get_engine, get_dataset_meta, list_datasets
 from app.core.query import Filter, fetch_column_stats, fetch_distinct_values, fetch_table, row_count
@@ -34,96 +35,6 @@ PAGE_SIZE = 50
 
 def _get_engine():
     return get_engine(DB_PATH)
-
-
-# ---------------------------------------------------------------------------
-# Filter widget helpers
-# ---------------------------------------------------------------------------
-
-_NUMERIC_OPS = {
-    "= (equals)": "eq",
-    "!= (not equals)": "neq",
-    ">= (gte)": "gte",
-    "<= (lte)": "lte",
-    "> (gt)": "gt",
-    "< (lt)": "lt",
-    "is null": "isnull",
-    "not null": "notnull",
-}
-
-_CAT_OPS = {
-    "is one of (IN)": "in",
-    "is not one of (NOT IN)": "nin",
-    "is null": "isnull",
-    "not null": "notnull",
-}
-
-
-def _render_filter_row(
-    i: int,
-    columns: list[dict],
-    engine,
-    table_name: str,
-) -> dict | None:
-    """Render a single filter row. Returns filter dict or None if removed."""
-    col_names = [c["name"] for c in columns]
-    col_dtypes = {c["name"]: c.get("dtype", "object") for c in columns}
-
-    f_col1, f_col2, f_col3, f_col4 = st.columns([2, 2, 3, 0.5])
-
-    with f_col1:
-        col_name = st.selectbox(
-            "Column",
-            col_names,
-            key=f"filter_col_{i}",
-            label_visibility="collapsed",
-        )
-
-    dtype = col_dtypes.get(col_name, "object")
-    is_numeric = "int" in dtype or "float" in dtype
-
-    ops = _NUMERIC_OPS if is_numeric else _CAT_OPS
-    with f_col2:
-        op_label = st.selectbox(
-            "Op",
-            list(ops.keys()),
-            key=f"filter_op_{i}",
-            label_visibility="collapsed",
-        )
-    op = ops[op_label]
-
-    value: Any = None
-    with f_col3:
-        if op in ("isnull", "notnull"):
-            st.caption("(no value needed)")
-        elif op in ("in", "nin"):
-            choices = fetch_distinct_values(table_name, col_name, engine, limit=200)
-            value = st.multiselect(
-                "Values",
-                options=choices,
-                key=f"filter_val_{i}",
-                label_visibility="collapsed",
-            )
-        elif is_numeric:
-            value = st.number_input(
-                "Value",
-                key=f"filter_val_{i}",
-                label_visibility="collapsed",
-            )
-        else:
-            value = st.text_input(
-                "Value",
-                key=f"filter_val_{i}",
-                label_visibility="collapsed",
-            )
-
-    with f_col4:
-        removed = st.button("✕", key=f"filter_rm_{i}")
-
-    if removed:
-        return None
-
-    return {"column": col_name, "op": op, "value": value}
 
 
 # ---------------------------------------------------------------------------
@@ -190,43 +101,17 @@ columns = meta_raw  # list of dicts with name, dtype, etc.
 
 # ---- Dynamic Filter Builder ----
 st.divider()
-st.subheader("Filters")
+n_active = active_filter_count("explore")
+expander_label = f"🔍 Filters ({n_active} active)" if n_active else "🔍 Filters"
+with st.expander(expander_label, expanded=n_active > 0):
+    filter_objs = render_filter_panel(table_name, columns, engine, key_prefix="explore")
 
-if "filters" not in st.session_state:
-    st.session_state["filters"] = []
-
-if st.button("+ Add filter"):
-    st.session_state["filters"].append(None)
-
-active_filters: list[dict] = []
-new_filter_state: list = []
-
-for i, _ in enumerate(st.session_state["filters"]):
-    result = _render_filter_row(i, columns, engine, table_name)
-    if result is not None:
-        active_filters.append(result)
-        new_filter_state.append(result)
-    # None means removed → drop from list
-
-st.session_state["filters"] = new_filter_state
-
-# Convert to Filter objects
-filter_objs = [Filter(f["column"], f["op"], f["value"]) for f in active_filters]
-
-# Show filter summary
+# Row count for pagination (separate from the in-panel count display)
 try:
     total_matching = row_count(table_name, engine, filter_objs)
     full_count = selected_ds["row_count"] or 0
-    if active_filters:
-        st.caption(
-            f"**{total_matching:,}** rows match filters "
-            f"(out of {full_count:,} total)"
-        )
-        if st.button("Clear all filters"):
-            st.session_state["filters"] = []
-            st.rerun()
-    else:
-        st.caption(f"Total rows: **{full_count:,}** (no filters applied)")
+    if not filter_objs:
+        st.caption(f"Total rows: **{full_count:,}**")
 except Exception as exc:
     st.error(f"Filter error: {exc}")
     total_matching = selected_ds["row_count"] or 0
