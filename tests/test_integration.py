@@ -280,6 +280,29 @@ class TestGenericAnalytics:
         result_df, fig = fn.fn(heart_df, self._meta(heart_df))
         assert isinstance(result_df, pd.DataFrame)
 
+    def test_pca_returns_variance_table_and_scatter(self, heart_df):
+        fn = REGISTRY["generic.pca"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), n_components=2, scale=True)
+        assert isinstance(result_df, pd.DataFrame)
+        assert list(result_df.columns) == [
+            "component", "explained_variance", "explained_variance_ratio", "cumulative_ratio"
+        ]
+        assert len(result_df) == 2
+        assert result_df["cumulative_ratio"].iloc[-1] <= 1.0
+        assert fig is not None
+
+    def test_pca_cumulative_ratio_monotone(self, heart_df):
+        fn = REGISTRY["generic.pca"]
+        result_df, _ = fn.fn(heart_df, self._meta(heart_df), n_components=3, scale=True)
+        ratios = result_df["cumulative_ratio"].tolist()
+        assert ratios == sorted(ratios), "cumulative_ratio must be non-decreasing"
+
+    def test_pca_no_scale(self, heart_df):
+        fn = REGISTRY["generic.pca"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), n_components=2, scale=False)
+        assert isinstance(result_df, pd.DataFrame)
+        assert len(result_df) == 2
+
     def test_all_generic_functions_callable(self, heart_df):
         """Smoke test: every generic fn can be called with defaults."""
         fns = get_functions_for("generic")

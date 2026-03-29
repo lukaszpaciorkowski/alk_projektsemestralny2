@@ -327,3 +327,87 @@ def run_dtypes(
     type_counts.columns = ["category", "count"]
     fig = px.pie(type_counts, names="category", values="count", title="Column Type Distribution")
     return result, fig
+
+
+# ---------------------------------------------------------------------------
+# 9. Principal Component Analysis
+# ---------------------------------------------------------------------------
+
+def run_pca(
+    df: pd.DataFrame,
+    meta: list[dict],
+    n_components: int = 2,
+    scale: bool = True,
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """PCA on numeric columns. Returns variance summary + 2-D scatter."""
+    try:
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        raise RuntimeError(
+            "scikit-learn is required for PCA. Install it with: pip install scikit-learn"
+        )
+
+    num_df = df.select_dtypes(include="number").dropna(axis=1, how="all")
+    num_df = num_df.loc[num_df.dropna().index]  # rows with no nulls across numeric cols
+
+    if num_df.shape[1] < 2:
+        raise ValueError("PCA requires at least 2 numeric columns with non-null values.")
+
+    n_components = min(n_components, num_df.shape[1], num_df.shape[0])
+
+    X = num_df.values
+    if scale:
+        X = StandardScaler().fit_transform(X)
+
+    pca = PCA(n_components=n_components)
+    components = pca.fit_transform(X)
+
+    # Variance summary table
+    cumulative = 0.0
+    summary_rows = []
+    for i, (var, ratio) in enumerate(
+        zip(pca.explained_variance_, pca.explained_variance_ratio_), start=1
+    ):
+        cumulative += ratio
+        summary_rows.append(
+            {
+                "component": f"PC{i}",
+                "explained_variance": round(float(var), 4),
+                "explained_variance_ratio": round(float(ratio), 4),
+                "cumulative_ratio": round(cumulative, 4),
+            }
+        )
+    result_df = pd.DataFrame(summary_rows)
+
+    # 2-D scatter (PC1 vs PC2)
+    fig = None
+    if n_components >= 2:
+        scatter_df = pd.DataFrame(components[:, :2], columns=["PC1", "PC2"])
+
+        # Colour by first categorical column of the original frame if available
+        cat_cols = _categorical_cols(df.loc[num_df.index])
+        color_col = cat_cols[0] if cat_cols else None
+        if color_col:
+            scatter_df[color_col] = df.loc[num_df.index, color_col].values
+
+        total_var = (
+            pca.explained_variance_ratio_[0] + pca.explained_variance_ratio_[1]
+        ) * 100
+
+        fig = px.scatter(
+            scatter_df,
+            x="PC1",
+            y="PC2",
+            color=color_col,
+            opacity=0.6,
+            title=f"PCA — PC1 vs PC2 ({total_var:.1f}% variance explained)",
+            labels={
+                "PC1": f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)",
+                "PC2": f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)",
+            },
+        )
+        fig.update_traces(marker_size=4)
+
+    return result_df, fig

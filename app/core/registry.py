@@ -22,6 +22,7 @@ from app.core.analytics.generic import (
     run_dtypes,
     run_groupby,
     run_null_analysis,
+    run_pca,
     run_value_counts,
 )
 from app.core.analytics.diabetes import (
@@ -219,6 +220,20 @@ REGISTRY: dict[str, AnalyticsFunction] = {
         fn=run_dtypes,
         has_chart=True,
         chart_type="bar",
+    ),
+    "generic.pca": AnalyticsFunction(
+        id="generic.pca",
+        label="Principal Component Analysis",
+        scope="generic",
+        description="PCA dimensionality reduction on numeric columns. Shows variance explained and 2D scatter.",
+        params=[
+            ParamSpec("n_components", "int", default=2, label="Number of components"),
+            ParamSpec("scale", "bool", default=True, label="Standardize features"),
+        ],
+        fn=run_pca,
+        has_chart=True,
+        chart_type="scatter",
+        requires_enrichment=False,
     ),
 
     # ── Diabetes ─────────────────────────────────────────────────────────────
