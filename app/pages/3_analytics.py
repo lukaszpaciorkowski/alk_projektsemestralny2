@@ -104,9 +104,9 @@ if engine is None:
     st.warning(
         "Database not found. Run the import pipeline on the **Data Sources** page first."
     )
-    st.stop()
-
-filter_opts = _get_filter_options(engine)
+    filter_opts = {"age_groups": [], "races": [], "admission_types": []}
+else:
+    filter_opts = _get_filter_options(engine)
 
 # ---- Filters ----
 st.subheader("Filters")
@@ -155,7 +155,7 @@ if model_key in ("readmission_age", "readmission_race"):
 st.divider()
 
 # ---- Run Analysis ----
-if st.button("Run Analysis", type="primary", use_container_width=True):
+if st.button("Run Analysis", type="primary", use_container_width=True, disabled=(engine is None)):
     with st.spinner("Running analysis..."):
         try:
             result_df: pd.DataFrame = pd.DataFrame()

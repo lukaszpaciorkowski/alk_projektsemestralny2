@@ -86,71 +86,71 @@ if engine is None:
     st.warning(
         "Database not found. Please run the import pipeline on the **Data Sources** page first."
     )
-    st.stop()
+else:
+    # ---- Table Selector ----
+    col_left, col_right = st.columns([2, 3])
+    with col_left:
+        selected_table = st.selectbox("Select Table", TABLES)
+    with col_right:
+        search_term = st.text_input("Search (filter rows)", placeholder="Type to filter...")
 
-# ---- Table Selector ----
-col_left, col_right = st.columns([2, 3])
-with col_left:
-    selected_table = st.selectbox("Select Table", TABLES)
-with col_right:
-    search_term = st.text_input("Search (filter rows)", placeholder="Type to filter...")
+    # Load data
+    try:
+        df = _load_table(engine, selected_table, search=search_term)
+    except Exception as exc:
+        st.error(f"Failed to load table '{selected_table}': {exc}")
+        df = pd.DataFrame()
 
-# Load data
-try:
-    df = _load_table(engine, selected_table, search=search_term)
-except Exception as exc:
-    st.error(f"Failed to load table '{selected_table}': {exc}")
-    st.stop()
+    if not df.empty:
+        st.caption(f"Showing {len(df):,} rows from `{selected_table}`")
 
-st.caption(f"Showing {len(df):,} rows from `{selected_table}`")
+        # ---- Paginated Data Table ----
+        st.subheader(f"Table: {selected_table}")
 
-# ---- Paginated Data Table ----
-st.subheader(f"Table: {selected_table}")
-
-page_num = st.number_input(
-    "Page",
-    min_value=1,
-    max_value=max(1, (len(df) - 1) // PAGE_SIZE + 1),
-    value=1,
-    step=1,
-)
-start = (page_num - 1) * PAGE_SIZE
-end = start + PAGE_SIZE
-st.dataframe(df.iloc[start:end], use_container_width=True, hide_index=True)
-
-st.divider()
-
-# ---- Column Histogram ----
-st.subheader("Column Distribution")
-
-numeric_cols = df.select_dtypes(include="number").columns.tolist()
-cat_cols = df.select_dtypes(exclude="number").columns.tolist()
-all_cols = numeric_cols + cat_cols
-
-if all_cols:
-    col_sel = st.selectbox("Choose column", all_cols)
-    if col_sel in numeric_cols:
-        bins = st.slider("Histogram bins", min_value=5, max_value=100, value=20)
-        fig = px.histogram(
-            df,
-            x=col_sel,
-            nbins=bins,
-            title=f"Distribution of {col_sel}",
+        page_num = st.number_input(
+            "Page",
+            min_value=1,
+            max_value=max(1, (len(df) - 1) // PAGE_SIZE + 1),
+            value=1,
+            step=1,
         )
-    else:
-        vc = df[col_sel].value_counts().reset_index()
-        vc.columns = [col_sel, "count"]
-        fig = px.bar(vc, x=col_sel, y="count", title=f"Value Counts: {col_sel}")
+        start = (page_num - 1) * PAGE_SIZE
+        end = start + PAGE_SIZE
+        st.dataframe(df.iloc[start:end], use_container_width=True, hide_index=True)
 
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No columns available.")
+        st.divider()
 
-st.divider()
+        # ---- Column Histogram ----
+        st.subheader("Column Distribution")
 
-# ---- Summary Statistics ----
-st.subheader("Summary Statistics")
-if numeric_cols:
-    st.dataframe(df[numeric_cols].describe().T, use_container_width=True)
-else:
-    st.info("No numeric columns in this table.")
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+        all_cols = numeric_cols + cat_cols
+
+        if all_cols:
+            col_sel = st.selectbox("Choose column", all_cols)
+            if col_sel in numeric_cols:
+                bins = st.slider("Histogram bins", min_value=5, max_value=100, value=20)
+                fig = px.histogram(
+                    df,
+                    x=col_sel,
+                    nbins=bins,
+                    title=f"Distribution of {col_sel}",
+                )
+            else:
+                vc = df[col_sel].value_counts().reset_index()
+                vc.columns = [col_sel, "count"]
+                fig = px.bar(vc, x=col_sel, y="count", title=f"Value Counts: {col_sel}")
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No columns available.")
+
+        st.divider()
+
+        # ---- Summary Statistics ----
+        st.subheader("Summary Statistics")
+        if numeric_cols:
+            st.dataframe(df[numeric_cols].describe().T, use_container_width=True)
+        else:
+            st.info("No numeric columns in this table.")
