@@ -303,6 +303,119 @@ class TestGenericAnalytics:
         assert isinstance(result_df, pd.DataFrame)
         assert len(result_df) == 2
 
+    def test_outlier_detection_zscore(self, heart_df):
+        fn = REGISTRY["generic.outlier_detection"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), column="chol", method="zscore", threshold=3)
+        assert isinstance(result_df, pd.DataFrame)
+        assert "outlier_count" in result_df.columns
+        assert fig is not None
+
+    def test_outlier_detection_iqr(self, heart_df):
+        fn = REGISTRY["generic.outlier_detection"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), column="age", method="iqr", threshold=1)
+        assert int(result_df["outlier_count"].iloc[0]) >= 0
+
+    def test_chi_square_returns_statistic(self, heart_df):
+        fn = REGISTRY["generic.chi_square"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), column_a="sex", column_b="target")
+        assert isinstance(result_df, pd.DataFrame)
+        assert "chi2_statistic" in result_df.columns
+        assert "p_value" in result_df.columns
+        assert fig is not None
+
+    def test_chi_square_cramers_v_range(self, heart_df):
+        fn = REGISTRY["generic.chi_square"]
+        result_df, _ = fn.fn(heart_df, self._meta(heart_df), column_a="sex", column_b="cp")
+        assert 0.0 <= float(result_df["cramers_v"].iloc[0]) <= 1.0
+
+    def test_two_group_test_ttest(self, heart_df):
+        fn = REGISTRY["generic.two_group_test"]
+        result_df, fig = fn.fn(
+            heart_df, self._meta(heart_df),
+            numeric_col="chol", group_col="sex", test_type="t-test"
+        )
+        assert isinstance(result_df, pd.DataFrame)
+        assert len(result_df) == 3  # group1, group2, TEST row
+        assert fig is not None
+
+    def test_two_group_test_mann_whitney(self, heart_df):
+        fn = REGISTRY["generic.two_group_test"]
+        result_df, _ = fn.fn(
+            heart_df, self._meta(heart_df),
+            numeric_col="age", group_col="target", test_type="mann-whitney"
+        )
+        assert "TEST" in result_df["group"].iloc[-1]
+
+    def test_multi_group_test_returns_per_group_stats(self, heart_df):
+        fn = REGISTRY["generic.multi_group_test"]
+        result_df, fig = fn.fn(
+            heart_df, self._meta(heart_df), numeric_col="chol", group_col="cp"
+        )
+        assert isinstance(result_df, pd.DataFrame)
+        assert len(result_df) >= 3  # at least 2 groups + TEST row
+        assert fig is not None
+
+    def test_normality_test_shapiro(self, heart_df):
+        fn = REGISTRY["generic.normality_test"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), column="age")
+        assert isinstance(result_df, pd.DataFrame)
+        assert "p_value" in result_df.columns
+        assert "is_normal_p005" in result_df.columns
+        assert fig is not None
+
+    def test_normality_test_skewness_is_float(self, heart_df):
+        fn = REGISTRY["generic.normality_test"]
+        result_df, _ = fn.fn(heart_df, self._meta(heart_df), column="chol")
+        assert isinstance(float(result_df["skewness"].iloc[0]), float)
+
+    def test_kmeans_summary_shape(self, heart_df):
+        fn = REGISTRY["generic.kmeans"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), n_clusters=3, scale=True)
+        assert isinstance(result_df, pd.DataFrame)
+        assert len(result_df) == 3
+        assert result_df["count"].sum() == len(heart_df.dropna())
+        assert fig is not None
+
+    def test_kmeans_pct_sums_to_100(self, heart_df):
+        fn = REGISTRY["generic.kmeans"]
+        result_df, _ = fn.fn(heart_df, self._meta(heart_df), n_clusters=4, scale=False)
+        assert abs(result_df["pct"].sum() - 100.0) < 0.1
+
+    def test_feature_importance_sorted_desc(self, heart_df):
+        fn = REGISTRY["generic.feature_importance"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df), target_col="target", max_features=5)
+        assert isinstance(result_df, pd.DataFrame)
+        assert len(result_df) <= 5
+        importances = result_df["importance"].tolist()
+        assert importances == sorted(importances, reverse=True)
+        assert fig is not None
+
+    def test_feature_importance_rank_column(self, heart_df):
+        fn = REGISTRY["generic.feature_importance"]
+        result_df, _ = fn.fn(heart_df, self._meta(heart_df), target_col="target", max_features=10)
+        assert list(result_df["rank"]) == list(range(1, len(result_df) + 1))
+
+    def test_time_series_no_date_col_returns_error_df(self, heart_df):
+        """heart_df has no date column — should return error DataFrame, not raise."""
+        fn = REGISTRY["generic.time_series"]
+        result_df, fig = fn.fn(heart_df, self._meta(heart_df))
+        assert isinstance(result_df, pd.DataFrame)
+        assert "error" in result_df.columns
+
+    def test_time_series_with_date_col(self):
+        """Synthetic time series data."""
+        import pandas as pd
+        fn = REGISTRY["generic.time_series"]
+        ts_df = pd.DataFrame({
+            "date": pd.date_range("2020-01-01", periods=30, freq="D").astype(str),
+            "value": range(30),
+        })
+        meta = [{"name": c, "dtype": str(ts_df[c].dtype)} for c in ts_df.columns]
+        result_df, fig = fn.fn(ts_df, meta, date_col="date", value_col="value", window=5)
+        assert isinstance(result_df, pd.DataFrame)
+        assert "error" not in result_df.columns
+        assert fig is not None
+
     def test_all_generic_functions_callable(self, heart_df):
         """Smoke test: every generic fn can be called with defaults."""
         fns = get_functions_for("generic")

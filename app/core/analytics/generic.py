@@ -411,3 +411,571 @@ def run_pca(
         fig.update_traces(marker_size=4)
 
     return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 10. Outlier Detection (Z-score & IQR)
+# ---------------------------------------------------------------------------
+
+def run_outlier_detection(
+    df: pd.DataFrame,
+    meta: list[dict],
+    column: str = "",
+    method: str = "zscore",
+    threshold: int = 3,
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Flag outliers in a numeric column using Z-score or IQR method."""
+    from scipy import stats as scipy_stats
+
+    num_cols = _numeric_cols(df)
+    if not num_cols:
+        return pd.DataFrame({"error": ["No numeric columns found."]}), None
+    if not column or column not in df.columns:
+        column = num_cols[0]
+
+    series = df[column].dropna()
+    if len(series) < 4:
+        return pd.DataFrame({"error": ["Too few non-null values for outlier detection."]}), None
+
+    if method == "zscore":
+        z = np.abs(scipy_stats.zscore(series))
+        mask = z > threshold
+    else:
+        q1, q3 = series.quantile(0.25), series.quantile(0.75)
+        iqr = q3 - q1
+        fence_lo = q1 - threshold * iqr
+        fence_hi = q3 + threshold * iqr
+        mask = (series < fence_lo) | (series > fence_hi)
+
+    outlier_vals = series[mask]
+    result_df = pd.DataFrame([{
+        "column": column,
+        "method": method,
+        "threshold": threshold,
+        "total_values": len(series),
+        "outlier_count": int(mask.sum()),
+        "outlier_pct": round(mask.mean() * 100, 2),
+        "min": round(float(series.min()), 4),
+        "max": round(float(series.max()), 4),
+        "mean": round(float(series.mean()), 4),
+        "std": round(float(series.std()), 4),
+    }])
+
+    plot_df = df[[column]].copy().dropna()
+    plot_df["_outlier"] = mask.reindex(plot_df.index, fill_value=False)
+    fig = px.box(
+        series.reset_index(drop=True),
+        points="all",
+        title=f"Outlier Detection — {column} ({method}, threshold={threshold})",
+        labels={"value": column},
+    )
+    if not outlier_vals.empty:
+        fig.add_scatter(
+            x=[0] * len(outlier_vals),
+            y=outlier_vals.values,
+            mode="markers",
+            marker=dict(color="red", size=8, symbol="x"),
+            name=f"Outliers ({len(outlier_vals)})",
+        )
+    return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 11. Chi-Square Test of Independence
+# ---------------------------------------------------------------------------
+
+def run_chi_square(
+    df: pd.DataFrame,
+    meta: list[dict],
+    column_a: str = "",
+    column_b: str = "",
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Chi-square test of independence between two categorical columns."""
+    from scipy import stats as scipy_stats
+
+    # Fall back to low-cardinality columns when no true categoricals
+    cat_cols = _categorical_cols(df)
+    if len(cat_cols) < 2:
+        low_card = [c for c in df.columns if df[c].nunique() <= 20]
+        cat_cols = low_card if len(low_card) >= 2 else list(df.columns)
+
+    if len(cat_cols) < 2:
+        return pd.DataFrame({"error": ["Need at least 2 categorical columns."]}), None
+
+    if not column_a or column_a not in df.columns:
+        column_a = cat_cols[0]
+    if not column_b or column_b not in df.columns:
+        column_b = cat_cols[1] if cat_cols[1] != column_a else (cat_cols[2] if len(cat_cols) > 2 else cat_cols[0])
+
+    subset = df[[column_a, column_b]].dropna()
+    if len(subset) < 5:
+        return pd.DataFrame({"error": ["Too few rows after dropping nulls."]}), None
+
+    ct = pd.crosstab(subset[column_a], subset[column_b])
+    chi2, p, dof, expected = scipy_stats.chi2_contingency(ct)
+
+    n = len(subset)
+    cramers_v = float(np.sqrt(chi2 / (n * (min(ct.shape) - 1)))) if min(ct.shape) > 1 else 0.0
+
+    result_df = pd.DataFrame([{
+        "column_a": column_a,
+        "column_b": column_b,
+        "chi2_statistic": round(chi2, 4),
+        "p_value": round(p, 6),
+        "degrees_of_freedom": dof,
+        "cramers_v": round(cramers_v, 4),
+        "significant_at_0.05": p < 0.05,
+        "n": n,
+    }])
+
+    fig = px.imshow(
+        ct,
+        text_auto=True,
+        title=f"Chi-Square — {column_a} × {column_b} (χ²={chi2:.2f}, p={p:.4f})",
+        aspect="auto",
+        color_continuous_scale="Blues",
+    )
+    return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 12. Two-Group Comparison (T-Test / Mann-Whitney U)
+# ---------------------------------------------------------------------------
+
+def run_two_group_test(
+    df: pd.DataFrame,
+    meta: list[dict],
+    numeric_col: str = "",
+    group_col: str = "",
+    test_type: str = "t-test",
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Compare a numeric column across two groups using t-test or Mann-Whitney U."""
+    from scipy import stats as scipy_stats
+
+    num_cols = _numeric_cols(df)
+    if not num_cols:
+        return pd.DataFrame({"error": ["No numeric columns found."]}), None
+
+    if not numeric_col or numeric_col not in df.columns:
+        numeric_col = num_cols[0]
+
+    # Find a usable group column (low cardinality, ≥2 groups)
+    if not group_col or group_col not in df.columns:
+        candidates = [c for c in df.columns if c != numeric_col and df[c].nunique() == 2]
+        if not candidates:
+            candidates = [c for c in df.columns if c != numeric_col and 2 <= df[c].nunique() <= 10]
+        group_col = candidates[0] if candidates else (num_cols[1] if len(num_cols) > 1 else num_cols[0])
+
+    top2 = df[group_col].value_counts().nlargest(2).index.tolist()
+    if len(top2) < 2:
+        return pd.DataFrame({"error": [f"Column '{group_col}' has fewer than 2 distinct values."]}), None
+
+    g1 = df.loc[df[group_col] == top2[0], numeric_col].dropna()
+    g2 = df.loc[df[group_col] == top2[1], numeric_col].dropna()
+    if len(g1) < 2 or len(g2) < 2:
+        return pd.DataFrame({"error": ["At least one group has too few observations."]}), None
+
+    if test_type == "mann-whitney":
+        stat, p = scipy_stats.mannwhitneyu(g1, g2, alternative="two-sided")
+        test_name = "Mann-Whitney U"
+    else:
+        stat, p = scipy_stats.ttest_ind(g1, g2, equal_var=False)
+        test_name = "Welch t-test"
+
+    # Cohen's d
+    pooled_std = np.sqrt((g1.std() ** 2 + g2.std() ** 2) / 2)
+    cohens_d = float((g1.mean() - g2.mean()) / pooled_std) if pooled_std > 0 else 0.0
+
+    result_df = pd.DataFrame([
+        {
+            "group": str(top2[0]), "n": len(g1),
+            "mean": round(float(g1.mean()), 4), "std": round(float(g1.std()), 4),
+            "median": round(float(g1.median()), 4),
+        },
+        {
+            "group": str(top2[1]), "n": len(g2),
+            "mean": round(float(g2.mean()), 4), "std": round(float(g2.std()), 4),
+            "median": round(float(g2.median()), 4),
+        },
+        {
+            "group": f"TEST ({test_name})",
+            "n": len(g1) + len(g2),
+            "mean": round(stat, 4),
+            "std": round(p, 6),
+            "median": round(cohens_d, 4),
+        },
+    ])
+
+    subset = df[df[group_col].isin(top2)][[group_col, numeric_col]].dropna()
+    subset[group_col] = subset[group_col].astype(str)
+    fig = px.box(
+        subset,
+        x=group_col,
+        y=numeric_col,
+        points="all",
+        title=f"{test_name}: {numeric_col} by {group_col} (p={p:.4f}, d={cohens_d:.3f})",
+    )
+    return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 13. Multi-Group Comparison (ANOVA / Kruskal-Wallis)
+# ---------------------------------------------------------------------------
+
+def run_multi_group_test(
+    df: pd.DataFrame,
+    meta: list[dict],
+    numeric_col: str = "",
+    group_col: str = "",
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """ANOVA or Kruskal-Wallis test across multiple groups."""
+    from scipy import stats as scipy_stats
+
+    num_cols = _numeric_cols(df)
+    if not num_cols:
+        return pd.DataFrame({"error": ["No numeric columns found."]}), None
+
+    if not numeric_col or numeric_col not in df.columns:
+        numeric_col = num_cols[0]
+
+    if not group_col or group_col not in df.columns:
+        candidates = [c for c in df.columns if c != numeric_col and 2 <= df[c].nunique() <= 15]
+        group_col = candidates[0] if candidates else (num_cols[1] if len(num_cols) > 1 else num_cols[0])
+
+    subset = df[[group_col, numeric_col]].dropna()
+    groups = [g[numeric_col].values for _, g in subset.groupby(group_col) if len(g) >= 2]
+    if len(groups) < 2:
+        return pd.DataFrame({"error": ["Need at least 2 groups with ≥ 2 observations each."]}), None
+
+    # Decide test: if any group fails Shapiro-Wilk normality → Kruskal
+    use_kruskal = False
+    for g in groups:
+        if len(g) >= 3 and len(g) <= 5000:
+            _, sp = scipy_stats.shapiro(g[:5000])
+            if sp < 0.05:
+                use_kruskal = True
+                break
+
+    if use_kruskal:
+        stat, p = scipy_stats.kruskal(*groups)
+        test_name = "Kruskal-Wallis H"
+    else:
+        stat, p = scipy_stats.f_oneway(*groups)
+        test_name = "One-way ANOVA F"
+
+    per_group = subset.groupby(group_col)[numeric_col].agg(
+        n="count", mean="mean", std="std", median="median"
+    ).round(4).reset_index()
+    per_group.columns = ["group", "n", "mean", "std", "median"]
+    summary = pd.concat([
+        per_group,
+        pd.DataFrame([{"group": f"TEST ({test_name})", "n": len(subset),
+                       "mean": round(stat, 4), "std": round(p, 6), "median": float("nan")}]),
+    ], ignore_index=True)
+
+    subset[group_col] = subset[group_col].astype(str)
+    fig = px.box(
+        subset,
+        x=group_col,
+        y=numeric_col,
+        points="outliers",
+        title=f"{test_name}: {numeric_col} by {group_col} (stat={stat:.3f}, p={p:.4f})",
+    )
+    fig.update_layout(xaxis_tickangle=-30)
+    return summary, fig
+
+
+# ---------------------------------------------------------------------------
+# 14. Normality Test
+# ---------------------------------------------------------------------------
+
+def run_normality_test(
+    df: pd.DataFrame,
+    meta: list[dict],
+    column: str = "",
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Shapiro-Wilk (n≤5000) or KS test plus skewness/kurtosis."""
+    from scipy import stats as scipy_stats
+
+    num_cols = _numeric_cols(df)
+    if not num_cols:
+        return pd.DataFrame({"error": ["No numeric columns found."]}), None
+    if not column or column not in df.columns:
+        column = num_cols[0]
+
+    series = df[column].dropna()
+    if len(series) < 3:
+        return pd.DataFrame({"error": ["Need at least 3 non-null values."]}), None
+
+    n = len(series)
+    if n <= 5000:
+        stat, p = scipy_stats.shapiro(series)
+        test_name = "Shapiro-Wilk"
+    else:
+        norm_series = (series - series.mean()) / series.std()
+        stat, p = scipy_stats.kstest(norm_series, "norm")
+        test_name = "Kolmogorov-Smirnov"
+
+    skew = float(scipy_stats.skew(series))
+    kurt = float(scipy_stats.kurtosis(series))
+
+    result_df = pd.DataFrame([{
+        "column": column,
+        "test": test_name,
+        "n": n,
+        "statistic": round(float(stat), 6),
+        "p_value": round(float(p), 6),
+        "skewness": round(skew, 4),
+        "kurtosis": round(kurt, 4),
+        "is_normal_p005": p > 0.05,
+    }])
+
+    # Histogram with normal curve overlay
+    x_range = np.linspace(series.min(), series.max(), 200)
+    mu, sigma = series.mean(), series.std()
+    normal_y = scipy_stats.norm.pdf(x_range, mu, sigma)
+    # Scale pdf to histogram counts
+    bin_width = (series.max() - series.min()) / 30
+    normal_y_scaled = normal_y * len(series) * bin_width
+
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(x=series, nbinsx=30, name="Data", opacity=0.7))
+    fig.add_trace(go.Scatter(
+        x=x_range, y=normal_y_scaled,
+        mode="lines", name="Normal curve",
+        line=dict(color="red", width=2),
+    ))
+    fig.update_layout(
+        title=f"Normality — {column} ({test_name}: p={p:.4f}, {'normal' if p > 0.05 else 'not normal'})",
+        xaxis_title=column,
+        yaxis_title="Count",
+        barmode="overlay",
+    )
+    return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 15. K-Means Clustering
+# ---------------------------------------------------------------------------
+
+def run_kmeans(
+    df: pd.DataFrame,
+    meta: list[dict],
+    n_clusters: int = 3,
+    scale: bool = True,
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """K-Means clustering on numeric columns with silhouette score and 2D projection."""
+    try:
+        from sklearn.cluster import KMeans
+        from sklearn.decomposition import PCA
+        from sklearn.metrics import silhouette_score
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        raise RuntimeError("scikit-learn is required. Install with: pip install scikit-learn")
+
+    num_df = df.select_dtypes(include="number").dropna()
+    if num_df.shape[1] < 1:
+        return pd.DataFrame({"error": ["No numeric columns found."]}), None
+    if len(num_df) < n_clusters + 1:
+        return pd.DataFrame({"error": [f"Need at least {n_clusters + 1} rows."]}), None
+
+    X = num_df.values
+    if scale:
+        X = StandardScaler().fit_transform(X)
+
+    n_clusters = min(n_clusters, len(num_df) - 1)
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = km.fit_predict(X)
+
+    sil = float(silhouette_score(X, labels)) if n_clusters > 1 else float("nan")
+
+    counts = pd.Series(labels).value_counts().sort_index()
+    summary = pd.DataFrame({
+        "cluster": counts.index,
+        "count": counts.values,
+        "pct": (counts.values / len(labels) * 100).round(2),
+        "silhouette_score": [round(sil, 4)] + [float("nan")] * (len(counts) - 1),
+    })
+
+    # Elbow plot k=2..min(10, n//10)
+    max_k = min(10, len(num_df) // 10)
+    ks = list(range(2, max(3, max_k + 1)))
+    inertias = []
+    for k in ks:
+        _km = KMeans(n_clusters=k, random_state=42, n_init=10)
+        _km.fit(X)
+        inertias.append(_km.inertia_)
+    elbow_fig = px.line(
+        x=ks, y=inertias,
+        markers=True,
+        title="Elbow Plot — Inertia vs Number of Clusters",
+        labels={"x": "k (clusters)", "y": "Inertia"},
+    )
+
+    # 2D scatter (PCA projection if >2 dims)
+    if X.shape[1] >= 2:
+        coords = PCA(n_components=2).fit_transform(X) if X.shape[1] > 2 else X[:, :2]
+        scatter_df = pd.DataFrame(coords, columns=["Dim1", "Dim2"])
+        scatter_df["Cluster"] = labels.astype(str)
+        fig = px.scatter(
+            scatter_df, x="Dim1", y="Dim2", color="Cluster",
+            opacity=0.7,
+            title=f"K-Means (k={n_clusters}, silhouette={sil:.3f})",
+        )
+        fig.update_traces(marker_size=5)
+    else:
+        fig = elbow_fig
+
+    return summary, fig
+
+
+# ---------------------------------------------------------------------------
+# 16. Feature Importance (Random Forest)
+# ---------------------------------------------------------------------------
+
+def run_feature_importance(
+    df: pd.DataFrame,
+    meta: list[dict],
+    target_col: str = "",
+    max_features: int = 20,
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Random Forest feature importance for any target column."""
+    try:
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+        from sklearn.preprocessing import LabelEncoder
+    except ImportError:
+        raise RuntimeError("scikit-learn is required. Install with: pip install scikit-learn")
+
+    if not target_col or target_col not in df.columns:
+        target_col = df.columns[-1]
+
+    feature_cols = [c for c in _numeric_cols(df) if c != target_col]
+    if not feature_cols:
+        return pd.DataFrame({"error": ["No numeric feature columns found."]}), None
+
+    subset = df[feature_cols + [target_col]].dropna()
+    if len(subset) < 10:
+        return pd.DataFrame({"error": ["Too few rows after dropping nulls."]}), None
+
+    # Sample for speed
+    if len(subset) > 10000:
+        subset = subset.sample(10000, random_state=42)
+
+    X = subset[feature_cols].values
+    y_raw = subset[target_col]
+    is_categorical = y_raw.dtype == object or y_raw.nunique() <= 20
+
+    if is_categorical:
+        le = LabelEncoder()
+        y = le.fit_transform(y_raw.astype(str))
+        model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        model_type = "classifier"
+    else:
+        y = y_raw.values
+        model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+        model_type = "regressor"
+
+    model.fit(X, y)
+    importances = model.feature_importances_
+
+    result_df = pd.DataFrame({
+        "feature": feature_cols,
+        "importance": importances,
+    }).sort_values("importance", ascending=False).head(max_features).reset_index(drop=True)
+    result_df["rank"] = range(1, len(result_df) + 1)
+    result_df["importance"] = result_df["importance"].round(6)
+
+    fig = px.bar(
+        result_df,
+        x="importance",
+        y="feature",
+        orientation="h",
+        title=f"Feature Importance — target: {target_col} ({model_type})",
+        labels={"importance": "Importance", "feature": "Feature"},
+    )
+    fig.update_layout(yaxis={"categoryorder": "total ascending"})
+    return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 17. Time Series Trend
+# ---------------------------------------------------------------------------
+
+def run_time_series(
+    df: pd.DataFrame,
+    meta: list[dict],
+    date_col: str = "",
+    value_col: str = "",
+    window: int = 7,
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Line chart with rolling mean overlay for a date + numeric column pair."""
+    # Find date column
+    if not date_col or date_col not in df.columns:
+        # Try to auto-detect a date-like column
+        for col in df.columns:
+            if any(kw in col.lower() for kw in ("date", "time", "year", "month", "week", "day")):
+                date_col = col
+                break
+    if not date_col or date_col not in df.columns:
+        return pd.DataFrame({"error": [
+            "No date column found. Select a column containing dates/times."
+        ]}), None
+
+    num_cols = _numeric_cols(df)
+    if not value_col or value_col not in df.columns:
+        value_col = num_cols[0] if num_cols else None
+    if not value_col:
+        return pd.DataFrame({"error": ["No numeric value column found."]}), None
+
+    ts = df[[date_col, value_col]].dropna().copy()
+    if len(ts) < 2:
+        return pd.DataFrame({"error": ["Too few rows for time series."]}), None
+
+    ts[date_col] = pd.to_datetime(ts[date_col], errors="coerce")
+    ts = ts.dropna(subset=[date_col]).sort_values(date_col)
+
+    if len(ts) < 2:
+        return pd.DataFrame({"error": [f"Could not parse '{date_col}' as dates."]}), None
+
+    window = min(window, max(2, len(ts) // 10))
+    ts["_rolling_mean"] = ts[value_col].rolling(window=window, min_periods=1).mean()
+
+    result_df = pd.DataFrame([{
+        "date_col": date_col,
+        "value_col": value_col,
+        "n": len(ts),
+        "date_min": str(ts[date_col].min().date()),
+        "date_max": str(ts[date_col].max().date()),
+        "value_mean": round(float(ts[value_col].mean()), 4),
+        "value_std": round(float(ts[value_col].std()), 4),
+        "rolling_window": window,
+    }])
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ts[date_col], y=ts[value_col],
+        mode="lines",
+        name=value_col,
+        line=dict(width=1, color="steelblue"),
+        opacity=0.6,
+    ))
+    fig.add_trace(go.Scatter(
+        x=ts[date_col], y=ts["_rolling_mean"],
+        mode="lines",
+        name=f"Rolling mean ({window})",
+        line=dict(width=2, color="red"),
+    ))
+    fig.update_layout(
+        title=f"Time Series: {value_col} over {date_col} (window={window})",
+        xaxis_title=date_col,
+        yaxis_title=value_col,
+    )
+    return result_df, fig
