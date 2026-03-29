@@ -475,17 +475,24 @@ def drop_dataset(table_name: str, con: Engine) -> None:
 # ---------------------------------------------------------------------------
 
 def list_datasets(con: Engine) -> list[dict]:
-    """Return all registered datasets as a list of dicts."""
+    """Return all registered datasets as a list of dicts (columns JSON decoded)."""
     with con.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT id, table_name, display_name, dataset_type, "
-                "enrichment_status, row_count, col_count, uploaded_at "
+                "enrichment_status, row_count, col_count, columns, uploaded_at "
                 "FROM _datasets ORDER BY id DESC"
             )
         ).fetchall()
-    return [
-        {
+    result = []
+    for r in rows:
+        columns_val = r[7]
+        if isinstance(columns_val, str):
+            try:
+                columns_val = json.loads(columns_val)
+            except (ValueError, TypeError):
+                columns_val = []
+        result.append({
             "id": r[0],
             "table_name": r[1],
             "display_name": r[2],
@@ -493,10 +500,10 @@ def list_datasets(con: Engine) -> list[dict]:
             "enrichment_status": r[4],
             "row_count": r[5],
             "col_count": r[6],
-            "uploaded_at": r[7],
-        }
-        for r in rows
-    ]
+            "columns": columns_val,
+            "uploaded_at": r[8],
+        })
+    return result
 
 
 def get_dataset_meta(table_name: str, con: Engine) -> dict | None:

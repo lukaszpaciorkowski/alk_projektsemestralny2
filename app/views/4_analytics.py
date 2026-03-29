@@ -223,47 +223,72 @@ run_clicked = st.button("Run Analysis", type="primary", use_container_width=True
 if run_clicked:
     with st.spinner("Running analysis..."):
         try:
-            # Load data
             from sqlalchemy import text as sql_text
             with engine.connect() as conn:
                 df = pd.read_sql(sql_text(f"SELECT * FROM [{table_name}]"), conn)
 
-            # Inject enrichment context for functions that need it
             if selected_fn.requires_enrichment:
                 collected_params["con"] = engine
                 collected_params["table_name"] = table_name
                 collected_params["enrichment_status"] = enrichment_status
 
-            # Call function
             result_df, fig = selected_fn.fn(df, meta_raw, **collected_params)
 
-            # Render results
-            st.divider()
-            view_mode = st.radio("View as", ["Chart", "Table"], horizontal=True)
-
-            if fig is not None and view_mode == "Chart":
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.dataframe(result_df, use_container_width=True, hide_index=True)
-
-            # Action buttons
-            btn1, btn2 = st.columns(2)
-            with btn1:
-                csv_data = result_df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "Download CSV",
-                    data=csv_data,
-                    file_name=f"{selected_fn.id}_results.csv",
-                    mime="text/csv",
-                )
-            with btn2:
-                if fig is not None:
-                    if st.button("Add to Report"):
-                        add_to_report(fig, selected_fn.label)
-                        st.success(f"Added '{selected_fn.label}' to report.")
+            st.session_state["analytics_result"] = {
+                "fn_id": selected_fn.id,
+                "fn_label": selected_fn.label,
+                "result_df": result_df,
+                "fig": fig,
+            }
+            st.session_state["analytics_error"] = None
 
         except EnrichmentRequiredError as exc:
-            st.warning(str(exc))
-            st.page_link("views/1_data_sources.py", label="Go to Data Sources →", icon="📂")
+            st.session_state["analytics_error"] = ("enrichment", str(exc))
+            st.session_state["analytics_result"] = None
         except Exception as exc:
-            st.error(f"Analysis failed: {exc}")
+            st.session_state["analytics_error"] = ("error", str(exc))
+            st.session_state["analytics_result"] = None
+
+# ---- Render persisted result ----
+analytics_error = st.session_state.get("analytics_error")
+analytics_result = st.session_state.get("analytics_result")
+
+# Clear result when a different function is selected
+if analytics_result and analytics_result.get("fn_id") != selected_fn_id:
+    st.session_state["analytics_result"] = None
+    analytics_result = None
+
+if analytics_error:
+    kind, msg = analytics_error
+    if kind == "enrichment":
+        st.warning(msg)
+        st.page_link("views/1_data_sources.py", label="Go to Data Sources →", icon="📂")
+    else:
+        st.error(f"Analysis failed: {msg}")
+elif analytics_result:
+    result_df = analytics_result["result_df"]
+    fig = analytics_result["fig"]
+    fn_label = analytics_result["fn_label"]
+
+    st.divider()
+    view_mode = st.radio("View as", ["Chart", "Table"], horizontal=True, key="analytics_view_mode")
+
+    if fig is not None and view_mode == "Chart":
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.dataframe(result_df, use_container_width=True, hide_index=True)
+
+    btn1, btn2 = st.columns(2)
+    with btn1:
+        csv_data = result_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download CSV",
+            data=csv_data,
+            file_name=f"{selected_fn_id}_results.csv",
+            mime="text/csv",
+        )
+    with btn2:
+        if fig is not None:
+            if st.button("Add to Report"):
+                add_to_report(fig, fn_label)
+                st.success(f"Added '{fn_label}' to report.")
