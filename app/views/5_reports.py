@@ -36,6 +36,49 @@ from app.state import (
 
 CONFIG_PATH = "config.json"
 
+_OP_LABELS: dict[str, str] = {
+    "eq": "=", "neq": "≠", "gte": "≥", "lte": "≤",
+    "gt": ">", "lt": "<",
+    "in": "IN", "nin": "NOT IN",
+    "like": "contains", "isnull": "is null", "notnull": "not null",
+}
+
+
+def _filter_to_str(f: dict) -> str:
+    """Return a human-readable string for a single filter dict."""
+    col = f.get("column", "?")
+    op_code = f.get("op", "")
+    op_label = _OP_LABELS.get(op_code, op_code)
+    val = f.get("value")
+
+    if op_code in ("isnull", "notnull"):
+        return f"{col} {op_label}"
+    if op_code in ("in", "nin") and isinstance(val, list):
+        vals = [str(v) for v in val[:5]]
+        suffix = f", +{len(val) - 5} more" if len(val) > 5 else ""
+        return f"{col} {op_label} [{', '.join(vals)}{suffix}]"
+    if op_code == "like" and isinstance(val, str):
+        return f"{col} contains '{val.strip('%')}'"
+    return f"{col} {op_label} {val}"
+
+
+def _filter_context_lines(item: dict) -> list[str]:
+    """Return formatted context lines for a report item (empty list = no context)."""
+    lines: list[str] = []
+    if item.get("dataset_name"):
+        lines.append(f"Dataset: {item['dataset_name']}")
+    filters = item.get("filters") or []
+    if filters:
+        parts = " AND ".join(_filter_to_str(f) for f in filters)
+        lines.append(f"Filters: {parts}")
+    rc = item.get("row_count")
+    tr = item.get("total_rows")
+    if rc is not None and tr is not None:
+        lines.append(f"Data: {rc:,} of {tr:,} rows")
+    elif tr is not None and filters:
+        lines.append(f"Total rows: {tr:,} (filtered subset used)")
+    return lines
+
 
 def _load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
@@ -63,8 +106,13 @@ def _generate_html_report(
         fig_bytes = _fig_to_png_bytes(item["fig"])
         if fig_bytes:
             b64 = base64.b64encode(fig_bytes).decode("utf-8")
+            ctx_lines = _filter_context_lines(item)
+            ctx_html = "".join(
+                f'<p class="filter-context">{line}</p>' for line in ctx_lines
+            )
             figures_html += (
                 f'<h3>{item["title"]}</h3>'
+                f'{ctx_html}'
                 f'<img src="data:image/png;base64,{b64}" '
                 f'style="max-width:100%;margin-bottom:24px;" alt="{item["title"]}"/>'
             )
@@ -95,8 +143,9 @@ def _generate_html_report(
   body {{ font-family: Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 24px; }}
   h1 {{ color: #1a5276; border-bottom: 2px solid #1a5276; padding-bottom: 8px; }}
   h2 {{ color: #1f618d; margin-top: 36px; }}
-  h3 {{ color: #2e86c1; }}
+  h3 {{ color: #2e86c1; margin-bottom: 4px; }}
   img {{ display: block; }}
+  .filter-context {{ font-size: 0.85em; color: #666; margin: 2px 0 8px; font-style: italic; }}
 </style>
 </head>
 <body>
@@ -172,14 +221,24 @@ def _generate_pdf_report(
     h2("Figures")
     for item in items:
         fig_bytes = _fig_to_png_bytes(item["fig"])
+        # Figure title
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(46, 134, 193)
+        pdf.cell(0, 7, item["title"])
+        pdf.ln(3)
+        # Filter context lines (italic, small, grey)
+        ctx_lines = _filter_context_lines(item)
+        if ctx_lines:
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_text_color(120, 120, 120)
+            for line in ctx_lines:
+                pdf.cell(0, 4, line)
+                pdf.ln(4)
+            pdf.ln(1)
         if fig_bytes:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp.write(fig_bytes)
                 tmp_path = tmp.name
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.set_text_color(46, 134, 193)
-            pdf.cell(0, 7, item["title"])
-            pdf.ln(3)
             usable_w = pdf.w - pdf.l_margin - pdf.r_margin
             pdf.image(tmp_path, x=pdf.l_margin, w=usable_w)
             pdf.ln(6)
@@ -187,7 +246,7 @@ def _generate_pdf_report(
         else:
             pdf.set_font("Helvetica", "I", 9)
             pdf.set_text_color(150, 150, 150)
-            pdf.cell(0, 6, f"{item['title']} — image could not be rendered.")
+            pdf.cell(0, 6, f"{item['title']} - image could not be rendered.")
             pdf.ln(4)
 
     return bytes(pdf.output())
@@ -219,6 +278,8 @@ else:
             col_title, col_up, col_down, col_remove = st.columns([5, 1, 1, 1])
             with col_title:
                 st.markdown(f"**{i + 1}. {item['title']}**")
+                for ctx_line in _filter_context_lines(item):
+                    st.caption(ctx_line)
             with col_up:
                 if st.button("▲", key=f"up_{i}", disabled=(i == 0)):
                     move_report_item(i, -1)
@@ -262,6 +323,9 @@ st.divider()
 # ---- Preview ----
 if items:
     with st.expander("Preview (first figure)", expanded=False):
+        st.subheader(items[0]["title"])
+        for ctx_line in _filter_context_lines(items[0]):
+            st.caption(ctx_line)
         st.plotly_chart(items[0]["fig"], use_container_width=True)
 
 # ---- Export ----

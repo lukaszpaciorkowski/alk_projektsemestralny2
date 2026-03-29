@@ -228,8 +228,21 @@ if plot_clicked and x_col:
     if color_col:
         chart_title += f" by {color_col}"
 
+    # Build filter dicts for serialisable history storage
+    _filter_dicts = [
+        {"column": f.column, "op": f.op, "value": f.value}
+        for f in adhoc_filters
+    ] if adhoc_filters else []
+    _total = selected_ds["row_count"]
+
     st.session_state["adhoc_chart_history"].append(
-        {"title": chart_title, "fig": fig}
+        {
+            "title": chart_title,
+            "fig": fig,
+            "filters": _filter_dicts,
+            "dataset_name": selected_ds["display_name"],
+            "total_rows": _total,
+        }
     )
 
     with st.container(border=True):
@@ -238,7 +251,13 @@ if plot_clicked and x_col:
         btn1, btn2 = st.columns(2)
         with btn1:
             if st.button("Add to Report"):
-                add_to_report(fig, chart_title)
+                add_to_report(
+                    fig=fig,
+                    title=chart_title,
+                    filters=adhoc_filters,
+                    dataset_name=selected_ds["display_name"],
+                    total_rows=_total,
+                )
                 st.success(f"Added '{chart_title}' to report.")
         with btn2:
             # Plotly PNG download (requires kaleido)
@@ -266,7 +285,13 @@ if history:
             st.caption(f"{i + 1}. {item['title']}")
         with h_col2:
             if st.button("Add to report", key=f"hist_report_{idx}"):
-                add_to_report(item["fig"], item["title"])
+                add_to_report(
+                    fig=item["fig"],
+                    title=item["title"],
+                    filters=item.get("filters", []),
+                    dataset_name=item.get("dataset_name", ""),
+                    total_rows=item.get("total_rows"),
+                )
                 st.success("Added to report.")
         with h_col3:
             if st.button("✕", key=f"hist_rm_{idx}"):

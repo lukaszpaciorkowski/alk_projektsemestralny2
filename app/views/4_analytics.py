@@ -361,5 +361,12 @@ elif analytics_result and analytics_result.get("fn_id") == selected_fn_id:
     with btn2:
         if fig is not None:
             if st.button("Add to Report", key="add_to_report"):
-                add_to_report(fig, fn_label)
+                add_to_report(
+                    fig=fig,
+                    title=fn_label,
+                    filters=filters,
+                    dataset_name=selected_ds["display_name"],
+                    row_count=df_rows,
+                    total_rows=full_count,
+                )
                 st.success(f"Added '{fn_label}' to report.")

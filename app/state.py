@@ -96,10 +96,35 @@ def set_active_dataset(
 # Report helpers
 # ---------------------------------------------------------------------------
 
-def add_to_report(fig: go.Figure, title: str) -> None:
-    """Add a Plotly figure + title to the report queue."""
+def add_to_report(
+    fig: go.Figure,
+    title: str,
+    filters: list | None = None,
+    dataset_name: str = "",
+    row_count: int | None = None,
+    total_rows: int | None = None,
+) -> None:
+    """Add a Plotly figure + title + filter context to the report queue."""
     init_state()
-    st.session_state["report_items"].append({"title": title, "fig": fig})
+    # Convert Filter dataclass instances to plain dicts for serialisability
+    filter_dicts: list[dict] = []
+    for f in (filters or []):
+        if isinstance(f, dict):
+            filter_dicts.append(f)
+        else:
+            filter_dicts.append(
+                {"column": f.column, "op": f.op, "value": f.value}
+            )
+    st.session_state["report_items"].append(
+        {
+            "title": title,
+            "fig": fig,
+            "filters": filter_dicts,
+            "dataset_name": dataset_name,
+            "row_count": row_count,
+            "total_rows": total_rows,
+        }
+    )
 
 
 def get_report_items() -> list[dict[str, Any]]:
