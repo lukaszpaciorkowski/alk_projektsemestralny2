@@ -5,3 +5,26 @@ dist/
 build/
 *.log
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Data files (download separately)
+data/raw/*.csv
+data/raw/*.zip
+data/processed/*.csv
+data/*.db
+
+# Generated outputs
+outputs/figures/*.png
+outputs/report/*.html
+outputs/report/*.pdf
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
