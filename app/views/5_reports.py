@@ -26,6 +26,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.components.sidebar import render_sidebar
+from app.core.pipeline import DB_PATH, get_engine
 from app.state import (
     clear_report,
     get_report_items,
@@ -321,7 +322,13 @@ def _generate_pdf_report(
 # ---------------------------------------------------------------------------
 
 render_sidebar()
-init_state()
+
+try:
+    _engine = get_engine(DB_PATH)
+except Exception:
+    _engine = None
+
+init_state(_engine)
 
 st.title("📄 Reports")
 st.markdown(
