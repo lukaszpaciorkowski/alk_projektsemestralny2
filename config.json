@@ -10,7 +10,7 @@
   },
   "database": {
     "engine": "sqlite",
-    "path": "data/diabetes.db"
+    "path": "data/data.db"
   },
   "output": {
     "figures_dir": "outputs/figures",
