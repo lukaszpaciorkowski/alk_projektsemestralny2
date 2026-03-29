@@ -19,7 +19,7 @@ st.set_page_config(
 pages = [
     st.Page("pages/1_data_sources.py",  title="Data Sources",   icon="📂"),
     st.Page("pages/2_exploration.py",   title="Data Exploration", icon="🔍"),
-    st.Page("pages/3_adhoc_charts.py",  title="Ad Hoc Charts",  icon="📈"),
+    st.Page("pages/3_adhoc_charts.py",  title="Ad Hoc Charts",  icon="📈", url_path="adhoc_charts"),
     st.Page("pages/4_analytics.py",     title="Analytics",       icon="📊"),
     st.Page("pages/5_reports.py",       title="Reports",         icon="📄"),
     st.Page("pages/6_architecture.py",  title="Architecture",    icon="📐"),

@@ -129,6 +129,7 @@ if st.session_state.get("active_dataset") != table_name:
         enrichment_status=enrichment_status,
         meta=meta_raw,
     )
+    st.rerun()
 
 # Get applicable functions
 functions = get_functions_for(dataset_type)

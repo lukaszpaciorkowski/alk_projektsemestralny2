@@ -182,6 +182,7 @@ if st.session_state.get("active_dataset") != table_name:
         enrichment_status=selected_ds["enrichment_status"],
         meta=meta_raw,
     )
+    st.rerun()
 
 columns = meta_raw  # list of dicts with name, dtype, etc.
 

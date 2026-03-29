@@ -333,5 +333,7 @@ def get_functions_for(dataset_type: str) -> list[AnalyticsFunction]:
     Generic functions come first, then specialized functions for the type.
     """
     generic = [fn for fn in REGISTRY.values() if fn.scope == "generic"]
+    if dataset_type == "generic":
+        return generic
     specialized = [fn for fn in REGISTRY.values() if fn.scope == dataset_type]
     return generic + specialized

@@ -43,12 +43,7 @@ def _get_db_status() -> tuple[bool, int, str, str | None]:
 def render_sidebar() -> None:
     """Render the sidebar with DB status, active dataset badge, and project info."""
     with st.sidebar:
-        st.image(
-            "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/"
-            "ALK_logo.svg/120px-ALK_logo.svg.png",
-            width=80,
-        )
-        st.markdown("### Patient Data Analysis")
+        st.markdown("### 🏥 Patient Data Analysis")
         st.markdown("*Generic Data Pipeline*")
         st.divider()
 
