@@ -23,7 +23,10 @@ from app.core.pipeline import DB_PATH, get_engine, list_datasets
 from app.core.type_detector import dataset_type_icon
 from app.state import add_to_report, init_state, set_active_dataset
 
-CHART_TYPES = ["Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap", "Choropleth Map"]
+CHART_TYPES = [
+    "Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap", "Choropleth Map",
+    "Pie", "Donut", "Multi-Line", "Area (Stacked)", "3D Scatter", "Sunburst", "Treemap",
+]
 
 AGG_FUNCS = ["mean", "sum", "count", "min", "max", "median"]
 
@@ -124,11 +127,13 @@ with st.container(border=True):
     with b_col1:
         chart_type = st.selectbox("Chart type", CHART_TYPES)
 
-    # Dynamic axis controls based on chart type
-    x_col = y_col = color_col = facet_col = None
+    # Dynamic axis controls — all params initialised to safe defaults
+    x_col = y_col = color_col = facet_col = z_col = size_col = None
+    path_cols: list[str] = []
     agg_func = "mean"
     bins = 30
     location_mode = "auto"
+    top_n = 10
 
     if chart_type == "Choropleth Map":
         c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
@@ -144,13 +149,11 @@ with st.container(border=True):
             loc_mode_label = st.selectbox("Location mode", LOCATION_MODES,
                                           key="adhoc_locmode")
             location_mode = _LOCATION_MODE_MAP[loc_mode_label]
-        st.caption("🗺️ Colors countries by the aggregated value. Uses Plotly's built-in world geometry — no extra packages needed.")
+        st.caption("🗺️ Colors countries by the aggregated value.")
 
     elif chart_type == "Histogram":
         x_col = st.selectbox("Column (X)", numeric_cols or all_cols, key="adhoc_x")
-        color_col = st.selectbox(
-            "Color (optional)", ["None"] + cat_cols, key="adhoc_color"
-        )
+        color_col = st.selectbox("Color (optional)", ["None"] + cat_cols, key="adhoc_color")
         bins = st.slider("Bins", min_value=5, max_value=100, value=30)
         color_col = None if color_col == "None" else color_col
 
@@ -161,9 +164,7 @@ with st.container(border=True):
         with c2:
             y_col = st.selectbox("Y axis", numeric_cols or all_cols, key="adhoc_y")
         with c3:
-            color_col = st.selectbox(
-                "Color (optional)", ["None"] + all_cols, key="adhoc_color"
-            )
+            color_col = st.selectbox("Color (optional)", ["None"] + all_cols, key="adhoc_color")
             color_col = None if color_col == "None" else color_col
 
     elif chart_type == "Box":
@@ -180,6 +181,61 @@ with st.container(border=True):
         with c2:
             y_col = st.selectbox("Y axis (categorical)", cat_cols or all_cols, key="adhoc_y")
 
+    elif chart_type in ("Pie", "Donut"):
+        c1, c2, c3 = st.columns([3, 3, 1])
+        with c1:
+            x_col = st.selectbox("Category column", cat_cols or all_cols, key="adhoc_x")
+        with c2:
+            _y_opt = st.selectbox("Value column (optional — default: count)",
+                                  ["None"] + numeric_cols, key="adhoc_y")
+            y_col = None if _y_opt == "None" else _y_opt
+        with c3:
+            top_n = st.number_input("Top N", min_value=2, max_value=100, value=10,
+                                    key="adhoc_topn", step=1)
+        st.caption("Slices beyond Top N are grouped into 'Other'.")
+
+    elif chart_type in ("Multi-Line", "Area (Stacked)"):
+        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+        with c1:
+            x_col = st.selectbox("X axis", all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            _grp = st.selectbox("Group by (optional)", ["None"] + cat_cols, key="adhoc_color")
+            color_col = None if _grp == "None" else _grp
+        with c4:
+            agg_func = st.selectbox("Agg", AGG_FUNCS, key="adhoc_agg")
+
+    elif chart_type == "3D Scatter":
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            x_col = st.selectbox("X axis", numeric_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            z_col = st.selectbox("Z axis", numeric_cols or all_cols, key="adhoc_z")
+        with c4:
+            _c = st.selectbox("Color (optional)", ["None"] + all_cols, key="adhoc_color")
+            color_col = None if _c == "None" else _c
+        with c5:
+            _s = st.selectbox("Size (optional)", ["None"] + numeric_cols, key="adhoc_size")
+            size_col = None if _s == "None" else _s
+        st.caption("Sampled to 10,000 points for performance.")
+
+    elif chart_type in ("Sunburst", "Treemap"):
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            path_cols = st.multiselect(
+                "Path columns (hierarchical order)", cat_cols or all_cols,
+                key="adhoc_path",
+                help="Select in order: outermost → innermost (e.g., continent, country, disease)",
+            )
+        with c2:
+            _y_opt = st.selectbox("Value column (optional — default: count)",
+                                  ["None"] + numeric_cols, key="adhoc_y")
+            y_col = None if _y_opt == "None" else _y_opt
+        st.caption("Select path columns in hierarchical order.")
+
     else:  # Bar / Line
         c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 2, 2])
         with c1:
@@ -189,14 +245,10 @@ with st.container(border=True):
         with c3:
             agg_func = st.selectbox("Agg", AGG_FUNCS, key="adhoc_agg")
         with c4:
-            color_col = st.selectbox(
-                "Color (optional)", ["None"] + cat_cols, key="adhoc_color"
-            )
+            color_col = st.selectbox("Color (optional)", ["None"] + cat_cols, key="adhoc_color")
             color_col = None if color_col == "None" else color_col
         with c5:
-            facet_col = st.selectbox(
-                "Facet (optional)", ["None"] + cat_cols, key="adhoc_facet"
-            )
+            facet_col = st.selectbox("Facet (optional)", ["None"] + cat_cols, key="adhoc_facet")
             facet_col = None if facet_col == "None" else facet_col
 
     btn_col, reset_col = st.columns([1, 5])
@@ -207,7 +259,8 @@ with st.container(border=True):
             st.rerun()
 
 # ---- Chart Output ----
-if plot_clicked and x_col:
+_can_plot = x_col or (chart_type in ("Sunburst", "Treemap") and path_cols)
+if plot_clicked and _can_plot:
     with st.spinner("Building chart..."):
         fig = build_chart(
             table_name=table_name,
@@ -221,12 +274,29 @@ if plot_clicked and x_col:
             bins=bins,
             location_mode=location_mode,
             filters=adhoc_filters,
+            z_col=z_col,
+            size_col=size_col,
+            path_cols=path_cols,
+            top_n=int(top_n),
         )
 
     st.session_state.setdefault("adhoc_chart_history", [])
-    chart_title = f"{chart_type} — {x_col}" + (f" × {y_col}" if y_col else "")
-    if color_col:
-        chart_title += f" by {color_col}"
+
+    # Build a descriptive title for history / report
+    if chart_type in ("Sunburst", "Treemap"):
+        chart_title = f"{chart_type} — {' > '.join(path_cols)}" if path_cols else chart_type
+    elif chart_type in ("Pie", "Donut"):
+        chart_title = f"{chart_type} — {x_col}" + (f" / {y_col}" if y_col else " (counts)")
+    elif chart_type == "3D Scatter":
+        chart_title = f"3D Scatter — {x_col} × {y_col} × {z_col}"
+    elif chart_type in ("Multi-Line", "Area (Stacked)"):
+        chart_title = f"{chart_type} — {x_col} × {y_col}"
+        if color_col:
+            chart_title += f" by {color_col}"
+    else:
+        chart_title = f"{chart_type} — {x_col}" + (f" × {y_col}" if y_col else "")
+        if color_col:
+            chart_title += f" by {color_col}"
 
     # Build filter dicts for serialisable history storage
     _filter_dicts = [

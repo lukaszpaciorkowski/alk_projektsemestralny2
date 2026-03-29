@@ -24,7 +24,7 @@ def build_chart(
     table_name: str,
     engine: Engine,
     chart_type: str,
-    x_col: str,
+    x_col: str | None = None,
     y_col: str | None = None,
     color_col: str | None = None,
     facet_col: str | None = None,
@@ -33,6 +33,11 @@ def build_chart(
     filters: list[Filter] | None = None,
     sample_limit: int = 50_000,
     location_mode: str = "country names",
+    # New chart type params
+    z_col: str | None = None,
+    size_col: str | None = None,
+    path_cols: list[str] | None = None,
+    top_n: int = 10,
 ) -> go.Figure:
     """
     Build a Plotly figure for the given chart configuration.
@@ -41,22 +46,26 @@ def build_chart(
         table_name: Dataset table name.
         engine: SQLAlchemy engine.
         chart_type: One of "Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap",
-                    "Choropleth Map".
-        x_col: X-axis / location column.
-        y_col: Y-axis / value column (None for Histogram).
+                    "Choropleth Map", "Pie", "Donut", "Multi-Line", "Area (Stacked)",
+                    "3D Scatter", "Sunburst", "Treemap".
+        x_col: X-axis / category / location column.
+        y_col: Y-axis / value column.
         color_col: Optional color / group-by column.
         facet_col: Optional facet column.
-        agg_func: Aggregation function for Bar / Line / Heatmap / Choropleth.
+        agg_func: Aggregation function.
         bins: Bin count for Histogram.
         filters: Optional filter list.
-        sample_limit: Max rows to load (avoids OOM on huge datasets).
-        location_mode: Plotly locationmode for Choropleth ("country names" or "ISO-3").
+        sample_limit: Max rows to load.
+        location_mode: Plotly locationmode for Choropleth.
+        z_col: Z-axis column for 3D Scatter.
+        size_col: Size column for 3D Scatter.
+        path_cols: Hierarchical path columns for Sunburst / Treemap.
+        top_n: Max slices before grouping into "Other" (Pie / Donut).
 
     Returns:
         A Plotly Figure. On error, returns a figure with an annotation.
     """
     try:
-        # Load data
         df = fetch_table(
             table_name,
             engine,
@@ -67,8 +76,11 @@ def build_chart(
         if df.empty:
             return _error_fig("No data matched the current filters.")
 
-        return _dispatch(df, chart_type, x_col, y_col, color_col, facet_col,
-                         agg_func, bins, location_mode)
+        return _dispatch(
+            df, chart_type, x_col, y_col, color_col, facet_col,
+            agg_func, bins, location_mode,
+            z_col=z_col, size_col=size_col, path_cols=path_cols or [], top_n=top_n,
+        )
 
     except Exception as exc:
         logger.exception("build_chart failed")
@@ -78,29 +90,43 @@ def build_chart(
 def _dispatch(
     df: pd.DataFrame,
     chart_type: str,
-    x_col: str,
+    x_col: str | None,
     y_col: str | None,
     color_col: str | None,
     facet_col: str | None,
     agg_func: str,
     bins: int,
     location_mode: str = "country names",
+    z_col: str | None = None,
+    size_col: str | None = None,
+    path_cols: list[str] | None = None,
+    top_n: int = 10,
 ) -> go.Figure:
     """Dispatch to the correct chart builder."""
     ct = chart_type.lower()
 
     if ct == "histogram":
-        return _histogram(df, x_col, bins, color_col)
+        return _histogram(df, x_col or "", bins, color_col)
     if ct == "scatter":
-        return _scatter(df, x_col, y_col or x_col, color_col, facet_col)
+        return _scatter(df, x_col or "", y_col or x_col or "", color_col, facet_col)
     if ct == "box":
-        return _box(df, x_col, y_col or x_col, color_col)
+        return _box(df, x_col or "", y_col or x_col or "", color_col)
     if ct == "heatmap":
-        return _heatmap(df, x_col, y_col or x_col, agg_func)
+        return _heatmap(df, x_col or "", y_col or x_col or "", agg_func)
     if ct in ("bar", "line"):
         return _bar_or_line(df, x_col, y_col, color_col, facet_col, agg_func, ct)
     if ct == "choropleth map":
-        return _choropleth(df, x_col, y_col or x_col, agg_func, location_mode)
+        return _choropleth(df, x_col or "", y_col or x_col or "", agg_func, location_mode)
+    if ct in ("pie", "donut"):
+        return _pie_or_donut(df, x_col or "", y_col, top_n, hole=0.4 if ct == "donut" else 0.0)
+    if ct in ("multi-line", "area (stacked)"):
+        return _multi_line_or_area(df, x_col or "", y_col or "", color_col, agg_func, ct)
+    if ct == "3d scatter":
+        return _scatter_3d(df, x_col or "", y_col or x_col or "", z_col or "", color_col, size_col)
+    if ct == "sunburst":
+        return _sunburst(df, path_cols or [], y_col)
+    if ct == "treemap":
+        return _treemap(df, path_cols or [], y_col)
 
     return _error_fig(f"Unknown chart type: {chart_type!r}")
 
@@ -287,6 +313,190 @@ def _choropleth(
         margin={"r": 0, "l": 0, "t": 40, "b": 0},
         height=500,
     )
+    return fig
+
+
+def _pie_or_donut(
+    df: pd.DataFrame,
+    cat_col: str,
+    val_col: str | None,
+    top_n: int,
+    hole: float,
+) -> go.Figure:
+    if cat_col not in df.columns:
+        return _error_fig(f"Category column '{cat_col}' not found.")
+
+    if val_col and val_col in df.columns:
+        agg = df.groupby(cat_col)[val_col].sum().reset_index()
+        values_col = val_col
+    else:
+        agg = df[cat_col].value_counts().reset_index()
+        agg.columns = [cat_col, "count"]
+        values_col = "count"
+
+    agg = agg.sort_values(values_col, ascending=False).reset_index(drop=True)
+    if len(agg) > top_n:
+        top = agg.head(top_n)
+        other_val = agg.iloc[top_n:][values_col].sum()
+        other_row = pd.DataFrame({cat_col: ["Other"], values_col: [other_val]})
+        agg = pd.concat([top, other_row], ignore_index=True)
+
+    kind = "Donut" if hole > 0 else "Pie"
+    title = f"{kind}: {cat_col}" + (f" (sum of {val_col})" if val_col else " (counts)")
+    fig = px.pie(agg, names=cat_col, values=values_col, hole=hole, title=title)
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    return fig
+
+
+def _multi_line_or_area(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    group_col: str | None,
+    agg_func: str,
+    chart_type: str,
+) -> go.Figure:
+    if x_col not in df.columns:
+        return _error_fig(f"X column '{x_col}' not found.")
+    if y_col not in df.columns:
+        return _error_fig(f"Y column '{y_col}' not found.")
+
+    group_cols = [x_col] + ([group_col] if group_col and group_col in df.columns else [])
+    fn_map = {"mean": "mean", "sum": "sum", "count": "count",
+              "min": "min", "max": "max", "median": "median"}
+    fn = fn_map.get(agg_func, "mean")
+    if fn == "count":
+        plot_df = df.groupby(group_cols).size().reset_index(name=y_col)
+    else:
+        plot_df = df.groupby(group_cols)[y_col].agg(fn).reset_index()
+
+    color = group_col if group_col and group_col in df.columns else None
+    kind = "Area" if "area" in chart_type else "Multi-Line"
+    title = f"{kind}: {agg_func}({y_col}) by {x_col}"
+    if color:
+        title += f" — grouped by {color}"
+
+    kwargs: dict = dict(
+        data_frame=plot_df, x=x_col, y=y_col, color=color,
+        title=title, markers=True,
+    )
+    if "area" in chart_type:
+        fig = px.area(**kwargs)
+    else:
+        fig = px.line(**kwargs)
+    fig.update_layout(xaxis_tickangle=-45)
+    return fig
+
+
+def _scatter_3d(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    color_col: str | None,
+    size_col: str | None,
+) -> go.Figure:
+    for col, label in ((x_col, "X"), (y_col, "Y"), (z_col, "Z")):
+        if not col:
+            return _error_fig(f"{label} axis column is required for 3D Scatter.")
+        if col not in df.columns:
+            return _error_fig(f"Column '{col}' not found.")
+
+    color = color_col if color_col and color_col in df.columns else None
+    size = size_col if size_col and size_col in df.columns else None
+
+    use_cols = [c for c in [x_col, y_col, z_col, color, size] if c]
+    plot_df = df[use_cols].dropna()
+    if plot_df.empty:
+        return _error_fig("No data after dropping nulls.")
+
+    # Clamp to 10k points for performance
+    if len(plot_df) > 10_000:
+        plot_df = plot_df.sample(10_000, random_state=42)
+
+    # Ensure size column is non-negative (required by Plotly)
+    if size:
+        min_val = plot_df[size].min()
+        if min_val < 0:
+            plot_df = plot_df.copy()
+            plot_df[size] = plot_df[size] - min_val
+
+    fig = px.scatter_3d(
+        plot_df, x=x_col, y=y_col, z=z_col,
+        color=color, size=size,
+        opacity=0.7,
+        title=f"3D Scatter: {x_col} × {y_col} × {z_col}",
+    )
+    if not size:
+        fig.update_traces(marker_size=4)
+    return fig
+
+
+def _sunburst(
+    df: pd.DataFrame,
+    path_cols: list[str],
+    val_col: str | None,
+) -> go.Figure:
+    if not path_cols:
+        return _error_fig("Select at least one path column for Sunburst.")
+    missing = [c for c in path_cols if c not in df.columns]
+    if missing:
+        return _error_fig(f"Path columns not found: {missing}")
+
+    if val_col and val_col in df.columns:
+        plot_df = df[path_cols + [val_col]].copy()
+    else:
+        plot_df = df[path_cols].copy()
+        plot_df["_count"] = 1
+        val_col = "_count"
+
+    # Convert path cols to string for Plotly compatibility
+    for c in path_cols:
+        plot_df[c] = plot_df[c].fillna("(blank)").astype(str)
+
+    plot_df = plot_df[plot_df[val_col] > 0] if pd.api.types.is_numeric_dtype(plot_df[val_col]) else plot_df
+
+    fig = px.sunburst(
+        plot_df,
+        path=path_cols,
+        values=val_col,
+        title=f"Sunburst: {' > '.join(path_cols)}",
+    )
+    fig.update_traces(textinfo="label+percent entry")
+    return fig
+
+
+def _treemap(
+    df: pd.DataFrame,
+    path_cols: list[str],
+    val_col: str | None,
+) -> go.Figure:
+    if not path_cols:
+        return _error_fig("Select at least one path column for Treemap.")
+    missing = [c for c in path_cols if c not in df.columns]
+    if missing:
+        return _error_fig(f"Path columns not found: {missing}")
+
+    if val_col and val_col in df.columns:
+        plot_df = df[path_cols + [val_col]].copy()
+    else:
+        plot_df = df[path_cols].copy()
+        plot_df["_count"] = 1
+        val_col = "_count"
+
+    for c in path_cols:
+        plot_df[c] = plot_df[c].fillna("(blank)").astype(str)
+
+    plot_df = plot_df[plot_df[val_col] > 0] if pd.api.types.is_numeric_dtype(plot_df[val_col]) else plot_df
+
+    fig = px.treemap(
+        plot_df,
+        path=path_cols,
+        values=val_col,
+        title=f"Treemap: {' > '.join(path_cols)}",
+        color_discrete_sequence=px.colors.qualitative.Pastel,
+    )
+    fig.update_traces(textinfo="label+value+percent entry")
     return fig
 
 
