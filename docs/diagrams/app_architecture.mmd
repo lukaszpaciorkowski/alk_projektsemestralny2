@@ -6,26 +6,35 @@ graph LR
         P4["📄 Reports"]
         P5["📐 Architecture"]
     end
+    subgraph Core ["🔧 app/core/"]
+        PL["pipeline.py\nimport_csv()\nenrich_dataset()"]
+    end
     subgraph Backend ["⚙️ Scripts / Query Layer"]
-        QS["03_query.py"]
-        VZ["04_visualize.py"]
-        IG["01_ingest.py\n02_load.py"]
+        QS["query_helpers.py"]
+        VZ["visualize_helpers.py"]
+        LH["load_helpers.py"]
+        IH["ingest_helpers.py"]
         DG["docs/diagrams/*.png"]
     end
     subgraph Storage ["💾 Storage"]
-        DB[("SQLite DB\ndata/diabetes.db")]
-        CSV["data/raw/\ndiabetic_data.csv"]
+        DB[("SQLite DB\ndata/diabetes.db\n+ datasets_registry")]
+        CSV["data/raw/\n*.csv (any dataset)"]
         OUT["outputs/figures/\noutputs/report/"]
     end
 
-    P1 --> IG
+    P1 --> PL
     P2 --> QS
     P3 --> QS
     P3 --> VZ
     P4 --> VZ
     P5 --> DG
 
-    IG --> CSV
-    IG --> DB
+    PL --> IH
+    PL --> LH
+    PL --> VZ
+    PL --> DB
+
+    IH --> CSV
+    LH --> DB
     QS --> DB
     VZ --> OUT
