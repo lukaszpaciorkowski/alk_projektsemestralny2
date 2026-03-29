@@ -1,401 +1,516 @@
 """
-pipeline.py — Generic data import pipeline for patient datasets.
+pipeline.py — Single import pipeline for all CSV datasets.
 
-Public API:
-    import_csv(csv_path, config_path) -> dict
-        Detect dataset type, validate, load into SQLite.
-        Returns metadata dict with dataset_type, row_count, etc.
-
-    enrich_dataset(dataset_name, config_path) -> dict
-        Run type-specific enrichment (statistics, correlations, domain analytics).
-        Returns dict with enrichment results.
-
-Dataset type detection:
-    "diabetes"  — CSV contains the UCI 130-US Hospitals signature columns
-    "generic"   — All other CSVs; stored as-is in a per-dataset SQLite table
+Flow: upload → validate → detect type → create table → register → optional enrich
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
-import sys
-from datetime import datetime
-from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from app.core.type_detector import detect_dataset_type
 
 logger = logging.getLogger(__name__)
 
-# ── Diabetes column signature ────────────────────────────────────────────────
-_DIABETES_SIGNATURE: frozenset[str] = frozenset(
-    {"encounter_id", "patient_nbr", "readmitted", "A1Cresult", "diag_1", "admission_type_id"}
-)
-_DIABETES_MATCH_THRESHOLD = 4  # need at least 4 of the 6 signature cols
+DB_PATH = "data/data.db"
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
-def _load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+@dataclass
+class ColumnMeta:
+    name: str
+    dtype: str          # pandas dtype string, e.g. "int64", "object", "float64"
+    sql_type: str       # SQLite type: "INTEGER", "REAL", "TEXT"
+    nullable: bool
+    unique_count: int
 
 
-def _get_engine(config: dict):
-    db_path = config["database"]["path"]
+@dataclass
+class ValidationReport:
+    null_counts: dict[str, int]
+    rows_dropped: int
+    type_coercion_warnings: list[str]
+    duplicate_rows: int
+    is_valid: bool
+
+
+@dataclass
+class ImportResult:
+    table_name: str
+    display_name: str
+    dataset_type: str
+    row_count: int
+    col_count: int
+    column_meta: list[ColumnMeta]
+    checksum: str
+    validation: ValidationReport
+
+
+@dataclass
+class EnrichmentResult:
+    meds_rows: int
+    diag_rows: int
+
+
+class EnrichmentRequiredError(Exception):
+    """Raised when an analytics function requires enrichment that has not been run."""
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def get_engine(db_path: str = DB_PATH) -> Engine:
+    """Return a SQLAlchemy engine for the app database."""
+    from pathlib import Path
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     return create_engine(f"sqlite:///{db_path}", echo=False)
 
 
-def _sanitize_name(csv_path: str) -> str:
-    """Convert a file path to a safe SQLite table / dataset name."""
-    stem = Path(csv_path).stem.lower()
-    return re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
+def make_table_name(filename: str) -> str:
+    """
+    Produce a valid SQLite identifier from a filename.
+
+    Format: ds_<sanitised_stem>_<6-char md5>
+    Max length: 60 chars total.
+    """
+    stem = re.sub(r"[^a-z0-9]+", "_", filename.lower().rsplit(".", 1)[0])
+    stem = stem.strip("_")[:40]
+    suffix = hashlib.md5(filename.encode()).hexdigest()[:6]
+    return f"ds_{stem}_{suffix}"
 
 
-def detect_dataset_type(df: pd.DataFrame) -> str:
-    """Return 'diabetes' or 'generic' based on column signature."""
-    overlap = _DIABETES_SIGNATURE & set(df.columns)
-    if len(overlap) >= _DIABETES_MATCH_THRESHOLD:
-        return "diabetes"
-    return "generic"
+def _pandas_to_sql_type(dtype: str) -> str:
+    """Map pandas dtype string to SQLite column type."""
+    if "int" in dtype:
+        return "INTEGER"
+    if "float" in dtype:
+        return "REAL"
+    return "TEXT"
 
 
-# ── Datasets registry ────────────────────────────────────────────────────────
-
-def _ensure_registry(engine) -> None:
-    """Create the datasets_registry table if it does not exist."""
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS datasets_registry (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                dataset_name TEXT    NOT NULL UNIQUE,
-                dataset_type TEXT    NOT NULL,
-                source_path  TEXT,
-                row_count    INTEGER,
-                col_count    INTEGER,
-                imported_at  TEXT
+def detect_column_types(df: pd.DataFrame) -> list[ColumnMeta]:
+    """Build ColumnMeta list from a DataFrame."""
+    meta: list[ColumnMeta] = []
+    for col in df.columns:
+        dtype_str = str(df[col].dtype)
+        meta.append(
+            ColumnMeta(
+                name=col,
+                dtype=dtype_str,
+                sql_type=_pandas_to_sql_type(dtype_str),
+                nullable=bool(df[col].isna().any()),
+                unique_count=int(df[col].nunique(dropna=True)),
             )
-        """))
+        )
+    return meta
 
 
-def _register_dataset(
-    engine,
-    dataset_name: str,
-    dataset_type: str,
-    source_path: str,
-    row_count: int,
-    col_count: int,
-) -> None:
-    _ensure_registry(engine)
-    now = datetime.utcnow().isoformat()
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO datasets_registry (dataset_name, dataset_type, source_path,
-                                           row_count, col_count, imported_at)
-            VALUES (:name, :dtype, :src, :rows, :cols, :ts)
-            ON CONFLICT(dataset_name) DO UPDATE SET
-                dataset_type = excluded.dataset_type,
-                source_path  = excluded.source_path,
-                row_count    = excluded.row_count,
-                col_count    = excluded.col_count,
-                imported_at  = excluded.imported_at
-        """), {"name": dataset_name, "dtype": dataset_type, "src": source_path,
-               "rows": row_count, "cols": col_count, "ts": now})
-    logger.info("Registered dataset '%s' (%s) in registry.", dataset_name, dataset_type)
-
-
-# ── Diabetes import ──────────────────────────────────────────────────────────
-
-def _import_diabetes(df: pd.DataFrame, config: dict, engine) -> int:
+def validate_csv(df: pd.DataFrame) -> ValidationReport:
     """
-    Run the full diabetes ETL: validate → normalise → load 3NF schema.
-    Reuses the logic from scripts/01_ingest.py and scripts/02_load.py.
-    """
-    from scripts.ingest_helpers import (
-        add_age_group_normalized,
-        drop_high_null_columns,
-        remove_outliers_zscore,
-        replace_question_marks,
-        standardize_readmission,
-        validate_age_groups,
-    )
-    from scripts.query_helpers import get_engine as _qe  # noqa: F401  (not used)
-    import scripts.load_helpers as lh  # type: ignore  # loaded lazily
+    Run basic validation checks on a freshly-read DataFrame.
 
-    pipeline = config["pipeline"]
-    df = replace_question_marks(df)
-    df = drop_high_null_columns(df, threshold=pipeline["null_threshold"])
-    df = remove_outliers_zscore(df, zscore_threshold=pipeline["outlier_zscore"])
-    df = validate_age_groups(df)
-    df = standardize_readmission(df)
-    df = add_age_group_normalized(
-        df,
-        age_bins=pipeline["age_bins"],
-        age_labels=pipeline["age_labels"],
+    Returns a ValidationReport — does NOT modify the DataFrame.
+    """
+    null_counts = df.isnull().sum().to_dict()
+    duplicate_rows = int(df.duplicated().sum())
+    warnings: list[str] = []
+
+    # Warn on columns that are all-null
+    all_null = [c for c, n in null_counts.items() if n == len(df)]
+    for col in all_null:
+        warnings.append(f"Column '{col}' is entirely null.")
+
+    is_valid = len(df) > 0
+
+    return ValidationReport(
+        null_counts={k: int(v) for k, v in null_counts.items()},
+        rows_dropped=0,
+        type_coercion_warnings=warnings,
+        duplicate_rows=duplicate_rows,
+        is_valid=is_valid,
     )
 
-    # Save processed CSV so 02_load.py can also be run standalone
-    processed_csv = config["data"]["processed_csv"]
-    Path(processed_csv).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(processed_csv, index=False)
-    logger.info("Diabetes processed CSV saved: %s (%d rows)", processed_csv, len(df))
 
-    # Load into relational schema using load_helpers
-    lh.ensure_schema(engine)
-    lh.load_admission_types(df, engine)
-    lh.load_discharge_types(df, engine)
-    lh.load_patients(df, engine)
-    lh.load_admissions(df, engine)
-    lh.unpivot_medications(df, engine)
-    lh.load_diagnoses_lookup(df, engine)
-    lh.load_diagnosis_encounters(df, engine)
-
-    logger.info("Diabetes ETL complete: %d rows loaded.", len(df))
-    return len(df)
+def _file_checksum(raw_bytes: bytes) -> str:
+    return hashlib.md5(raw_bytes).hexdigest()
 
 
-# ── Generic import ───────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Main import function
+# ---------------------------------------------------------------------------
 
-def _import_generic(df: pd.DataFrame, dataset_name: str, engine) -> int:
-    """Store a generic CSV as a flat table in SQLite."""
-    # Replace '?' with NaN
-    df = df.replace("?", np.nan)
-    # Drop fully-empty columns
-    df = df.dropna(axis=1, how="all")
-
-    table_name = f"generic_{dataset_name}"
-    df.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=5000)
-    logger.info("Generic dataset stored as table '%s' (%d rows).", table_name, len(df))
-    return len(df)
-
-
-# ── Public API ───────────────────────────────────────────────────────────────
-
-def import_csv(csv_path: str, config_path: str = "config.json") -> dict[str, Any]:
+def import_csv(
+    file,
+    con: Engine,
+    config: dict | None = None,
+    delimiter: str = ",",
+    encoding: str = "utf-8",
+) -> ImportResult:
     """
-    Import a CSV file through the appropriate pipeline.
-
-    Auto-detects dataset type:
-      - "diabetes" if the file contains the UCI 130-US Hospitals column signature
-      - "generic"  otherwise
+    Full import flow: read → validate → detect → create table → register.
 
     Args:
-        csv_path:    Path to the CSV file to import.
-        config_path: Path to config.json (default: "config.json").
+        file: File-like object (Streamlit UploadedFile or path str).
+        con: SQLAlchemy engine pointing at data.db.
+        config: Optional pipeline config dict.
+        delimiter: CSV delimiter (default ',').
+        encoding: File encoding (default 'utf-8').
 
     Returns:
-        dict with keys:
-            dataset_name  str   — sanitized name derived from the filename
-            dataset_type  str   — "diabetes" | "generic"
-            row_count     int   — rows after cleaning
-            col_count     int   — columns in the raw CSV
-            table_name    str   — SQLite table(s) where data lives
+        ImportResult with all metadata.
+
+    Raises:
+        ValueError: If the CSV cannot be parsed or is empty.
     """
-    config = _load_config(config_path)
-    engine = _get_engine(config)
-    dataset_name = _sanitize_name(csv_path)
-
-    logger.info("Importing CSV: %s → dataset_name='%s'", csv_path, dataset_name)
-
-    df_raw = pd.read_csv(csv_path, low_memory=False)
-    col_count = len(df_raw.columns)
-    dataset_type = detect_dataset_type(df_raw)
-    logger.info("Auto-detected dataset type: %s", dataset_type)
-
-    if dataset_type == "diabetes":
-        row_count = _import_diabetes(df_raw, config, engine)
-        table_name = "admissions"
+    # Read raw bytes for checksum
+    if hasattr(file, "read"):
+        raw_bytes = file.read()
+        file_name = getattr(file, "name", "upload.csv")
     else:
-        row_count = _import_generic(df_raw, dataset_name, engine)
-        table_name = f"generic_{dataset_name}"
+        with open(file, "rb") as fh:
+            raw_bytes = fh.read()
+        file_name = str(file)
 
-    _register_dataset(engine, dataset_name, dataset_type, csv_path, row_count, col_count)
+    checksum = _file_checksum(raw_bytes)
 
-    return {
-        "dataset_name": dataset_name,
-        "dataset_type": dataset_type,
-        "row_count": row_count,
-        "col_count": col_count,
-        "table_name": table_name,
-    }
-
-
-def enrich_dataset(dataset_name: str, config_path: str = "config.json") -> dict[str, Any]:
-    """
-    Run type-specific enrichment for a registered dataset.
-
-    For "diabetes": runs readmission / HbA1c / LOS summary analytics and
-                    re-generates matplotlib PNGs to outputs/figures/.
-    For "generic":  computes descriptive statistics and a correlation matrix,
-                    saves figures to outputs/figures/<dataset_name>_*.png.
-
-    Args:
-        dataset_name: The sanitized dataset name (from import_csv return value).
-        config_path:  Path to config.json.
-
-    Returns:
-        dict with enrichment metadata (figures_saved, stats_summary, etc.)
-    """
-    config = _load_config(config_path)
-    engine = _get_engine(config)
-    _ensure_registry(engine)
-
-    # Lookup dataset type from registry
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT dataset_type, row_count FROM datasets_registry WHERE dataset_name = :n"),
-            {"n": dataset_name},
+    # Check for duplicate by checksum
+    with con.connect() as conn:
+        existing = conn.execute(
+            text("SELECT table_name FROM _datasets WHERE checksum = :cs"),
+            {"cs": checksum},
         ).fetchone()
+        if existing:
+            raise ValueError(
+                f"This file was already imported as table '{existing[0]}'. "
+                "Delete the existing dataset first if you want to re-import."
+            )
 
-    if row is None:
-        raise ValueError(f"Dataset '{dataset_name}' not found in registry. Run import_csv first.")
-
-    dataset_type, row_count = row[0], row[1]
-    logger.info("Enriching '%s' (type=%s, rows=%d)", dataset_name, dataset_type, row_count)
-
-    if dataset_type == "diabetes":
-        return _enrich_diabetes(config, engine)
-    else:
-        return _enrich_generic(dataset_name, config, engine)
-
-
-# ── Enrichment: diabetes ─────────────────────────────────────────────────────
-
-def _enrich_diabetes(config: dict, engine) -> dict[str, Any]:
-    """Re-generate all 6 diabetes figures and return summary stats."""
-    import matplotlib
-    matplotlib.use("Agg")
-
-    from scripts.visualize_helpers import generate_all_figures  # type: ignore
-    from scripts.query_helpers import summary_stats
-
-    figures_dir = config["output"]["figures_dir"]
-    dpi = config["output"]["dpi"]
-    palette = config["pipeline"]["palette"]
-    top_n = config["pipeline"]["top_n_diagnoses"]
-
-    figs = generate_all_figures(engine, figures_dir, dpi=dpi, palette=palette, top_n=top_n)
-    figures_saved = list(figs.keys())
-
-    stats = summary_stats(engine)
-    readmission_dist = stats.get("readmission_dist", pd.DataFrame()).to_dict(orient="records")
-
-    logger.info("Diabetes enrichment complete: %d figures generated.", len(figures_saved))
-    return {
-        "dataset_type": "diabetes",
-        "figures_saved": figures_saved,
-        "readmission_dist": readmission_dist,
-    }
-
-
-# ── Enrichment: generic ──────────────────────────────────────────────────────
-
-def _enrich_generic(dataset_name: str, config: dict, engine) -> dict[str, Any]:
-    """Compute descriptive statistics and correlation matrix; save PNGs."""
-    import matplotlib
-    matplotlib.use("Agg")
-
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-
-    table_name = f"generic_{dataset_name}"
-    with engine.connect() as conn:
-        df = pd.read_sql(text(f"SELECT * FROM {table_name}"), conn)
-
-    figures_dir = config["output"]["figures_dir"]
-    Path(figures_dir).mkdir(parents=True, exist_ok=True)
-    dpi = config["output"]["dpi"]
-
-    numeric_df = df.select_dtypes(include="number")
-    figures_saved: list[str] = []
-
-    # ── Descriptive statistics figure ──────────────────────────────────────
-    if not numeric_df.empty:
-        desc = numeric_df.describe().T
-        fig, ax = plt.subplots(figsize=(max(8, len(numeric_df.columns)), 4))
-        ax.axis("off")
-        tbl = ax.table(
-            cellText=desc.round(2).values,
-            rowLabels=desc.index.tolist(),
-            colLabels=desc.columns.tolist(),
-            cellLoc="center",
-            loc="center",
+    # Parse CSV
+    try:
+        df = pd.read_csv(
+            BytesIO(raw_bytes),
+            delimiter=delimiter,
+            encoding=encoding,
+            low_memory=False,
         )
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(7)
-        tbl.scale(1, 1.4)
-        ax.set_title(f"{dataset_name} — Descriptive Statistics", pad=12, fontsize=10)
-        path = f"{figures_dir}/{dataset_name}_describe.png"
-        fig.savefig(path, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
-        figures_saved.append(path)
-        logger.info("Saved describe figure: %s", path)
+    except Exception as exc:
+        raise ValueError(f"Cannot parse CSV: {exc}") from exc
 
-    # ── Correlation heatmap ─────────────────────────────────────────────────
-    if numeric_df.shape[1] >= 2:
-        corr = numeric_df.corr()
-        n = corr.shape[0]
-        fig, ax = plt.subplots(figsize=(max(6, n), max(5, n - 1)))
-        sns.heatmap(
-            corr,
-            annot=n <= 12,
-            fmt=".2f",
-            cmap="coolwarm",
-            square=True,
-            ax=ax,
-            linewidths=0.5,
-        )
-        ax.set_title(f"{dataset_name} — Correlation Matrix")
-        path = f"{figures_dir}/{dataset_name}_correlation.png"
-        fig.savefig(path, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
-        figures_saved.append(path)
-        logger.info("Saved correlation figure: %s", path)
+    if df.empty:
+        raise ValueError("The CSV file is empty.")
 
-    # ── Distribution plots for first 6 numeric columns ─────────────────────
-    cols_to_plot = numeric_df.columns[:6].tolist()
-    if cols_to_plot:
-        n_cols = min(3, len(cols_to_plot))
-        n_rows = (len(cols_to_plot) + n_cols - 1) // n_cols
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
-        axes_flat = np.array(axes).flatten() if n_rows * n_cols > 1 else [axes]
-        for i, col in enumerate(cols_to_plot):
-            axes_flat[i].hist(numeric_df[col].dropna(), bins=30, edgecolor="white")
-            axes_flat[i].set_title(col, fontsize=9)
-            axes_flat[i].set_xlabel(col)
-            axes_flat[i].set_ylabel("Count")
-        for j in range(len(cols_to_plot), len(axes_flat)):
-            axes_flat[j].set_visible(False)
-        fig.suptitle(f"{dataset_name} — Feature Distributions", fontsize=11)
-        fig.tight_layout()
-        path = f"{figures_dir}/{dataset_name}_distributions.png"
-        fig.savefig(path, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
-        figures_saved.append(path)
-        logger.info("Saved distributions figure: %s", path)
+    # Clean up column names: strip whitespace
+    df.columns = df.columns.str.strip()
 
-    stats_summary = {}
-    if not numeric_df.empty:
-        stats_summary = {
-            col: {
-                "mean": float(numeric_df[col].mean()) if not numeric_df[col].isna().all() else None,
-                "std": float(numeric_df[col].std()) if not numeric_df[col].isna().all() else None,
-                "min": float(numeric_df[col].min()) if not numeric_df[col].isna().all() else None,
-                "max": float(numeric_df[col].max()) if not numeric_df[col].isna().all() else None,
+    # Validate
+    validation = validate_csv(df)
+
+    # Detect type
+    dataset_type = detect_dataset_type(df)
+
+    # Build identifiers
+    table_name = make_table_name(file_name)
+    display_name = file_name
+    col_meta = detect_column_types(df)
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+
+    # Write to DB atomically
+    columns_json = json.dumps(
+        [
+            {
+                "name": m.name,
+                "dtype": m.dtype,
+                "sql_type": m.sql_type,
+                "nullable": m.nullable,
+                "unique_count": m.unique_count,
             }
-            for col in numeric_df.columns[:20]
-        }
+            for m in col_meta
+        ]
+    )
 
-    return {
-        "dataset_type": "generic",
-        "dataset_name": dataset_name,
-        "figures_saved": figures_saved,
-        "stats_summary": stats_summary,
-    }
+    with con.begin() as txn:
+        # Create the dynamic table
+        df.to_sql(table_name, con=txn, if_exists="fail", index=False, chunksize=5000)
+
+        # Register in _datasets
+        txn.execute(
+            text(
+                """
+                INSERT INTO _datasets
+                    (table_name, display_name, dataset_type, enrichment_status,
+                     row_count, col_count, columns, checksum, uploaded_at)
+                VALUES
+                    (:table_name, :display_name, :dataset_type, 'none',
+                     :row_count, :col_count, :columns, :checksum, :uploaded_at)
+                """
+            ),
+            {
+                "table_name": table_name,
+                "display_name": display_name,
+                "dataset_type": dataset_type,
+                "row_count": len(df),
+                "col_count": len(df.columns),
+                "columns": columns_json,
+                "checksum": checksum,
+                "uploaded_at": uploaded_at,
+            },
+        )
+
+    logger.info(
+        "Imported '%s' → %s (%d rows, %d cols, type=%s)",
+        display_name,
+        table_name,
+        len(df),
+        len(df.columns),
+        dataset_type,
+    )
+
+    return ImportResult(
+        table_name=table_name,
+        display_name=display_name,
+        dataset_type=dataset_type,
+        row_count=len(df),
+        col_count=len(df.columns),
+        column_meta=col_meta,
+        checksum=checksum,
+        validation=validation,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment (diabetes only)
+# ---------------------------------------------------------------------------
+
+_DIABETES_MED_COLS = [
+    "metformin", "repaglinide", "nateglinide", "chlorpropamide",
+    "glimepiride", "acetohexamide", "glipizide", "glyburide", "tolbutamide",
+    "pioglitazone", "rosiglitazone", "acarbose", "miglitol", "troglitazone",
+    "tolazamide", "examide", "citoglipton", "insulin",
+    "glyburide-metformin", "glipizide-metformin",
+    "glimepiride-pioglitazone", "metformin-rosiglitazone",
+    "metformin-pioglitazone",
+]
+
+_ICD9_RANGES: list[tuple[str, str, str]] = [
+    ("001", "139", "Infectious and Parasitic Diseases"),
+    ("140", "239", "Neoplasms"),
+    ("240", "279", "Endocrine, Nutritional, Metabolic"),
+    ("280", "289", "Blood Diseases"),
+    ("290", "319", "Mental Disorders"),
+    ("320", "389", "Nervous System"),
+    ("390", "459", "Circulatory System"),
+    ("460", "519", "Respiratory System"),
+    ("520", "579", "Digestive System"),
+    ("580", "629", "Genitourinary System"),
+    ("630", "679", "Pregnancy/Childbirth"),
+    ("680", "709", "Skin Diseases"),
+    ("710", "739", "Musculoskeletal System"),
+    ("740", "759", "Congenital Anomalies"),
+    ("760", "779", "Perinatal Conditions"),
+    ("780", "799", "Symptoms and Signs"),
+    ("800", "999", "Injury and Poisoning"),
+]
+
+
+def _classify_icd9(code: str | None) -> str:
+    """Return the ICD-9 chapter name for a given code string."""
+    if not code or not isinstance(code, str):
+        return "Unknown"
+    code = code.strip().upper()
+    # V-codes and E-codes
+    if code.startswith("V"):
+        return "V Codes (Supplementary)"
+    if code.startswith("E"):
+        return "E Codes (External Causes)"
+    try:
+        num = int(code.split(".")[0])
+    except ValueError:
+        return "Unknown"
+    for lo, hi, label in _ICD9_RANGES:
+        if int(lo) <= num <= int(hi):
+            return label
+    return "Unknown"
+
+
+def enrich_dataset(
+    table_name: str,
+    dataset_type: str,
+    con: Engine,
+) -> EnrichmentResult:
+    """
+    Run enrichment for a recognized dataset type.
+
+    Currently only 'diabetes' is supported. Creates:
+        <table_name>_meds  — unpivoted medication rows
+        <table_name>_diag  — ICD-9 diagnosis rows
+
+    Args:
+        table_name: Base table name (e.g. 'ds_diabetic_a3f9c1').
+        dataset_type: Must be 'diabetes' for enrichment to run.
+        con: SQLAlchemy engine for data.db.
+
+    Returns:
+        EnrichmentResult with row counts for derived tables.
+
+    Raises:
+        ValueError: If dataset_type is not 'diabetes'.
+    """
+    if dataset_type != "diabetes":
+        raise ValueError(f"Enrichment not supported for dataset type '{dataset_type}'.")
+
+    # Mark as pending
+    with con.begin() as txn:
+        txn.execute(
+            text("UPDATE _datasets SET enrichment_status='pending' WHERE table_name=:tn"),
+            {"tn": table_name},
+        )
+
+    # Load base table
+    with con.connect() as conn:
+        df = pd.read_sql(text(f"SELECT * FROM [{table_name}]"), conn)
+
+    # ---- Medications unpivot ----
+    med_cols_present = [c for c in _DIABETES_MED_COLS if c in df.columns]
+    id_col = "encounter_id" if "encounter_id" in df.columns else df.columns[0]
+
+    if med_cols_present:
+        meds_df = df[[id_col] + med_cols_present].copy()
+        meds_df = meds_df.melt(
+            id_vars=[id_col],
+            value_vars=med_cols_present,
+            var_name="drug",
+            value_name="dosage_change",
+        )
+        meds_df = meds_df[meds_df["dosage_change"].notna()].copy()
+        meds_df.columns = ["encounter_id", "drug", "dosage_change"]
+    else:
+        meds_df = pd.DataFrame(columns=["encounter_id", "drug", "dosage_change"])
+
+    meds_table = f"{table_name}_meds"
+    with con.begin() as txn:
+        txn.execute(text(f"DROP TABLE IF EXISTS [{meds_table}]"))
+    meds_df.to_sql(meds_table, con=con, if_exists="replace", index=False, chunksize=5000)
+
+    # ---- Diagnoses decode ----
+    diag_cols = [c for c in ["diag_1", "diag_2", "diag_3"] if c in df.columns]
+    diag_rows: list[dict] = []
+    for _, row in df.iterrows():
+        enc_id = row.get(id_col)
+        for pos, dc in enumerate(diag_cols, start=1):
+            code = row.get(dc)
+            if pd.notna(code):
+                diag_rows.append(
+                    {
+                        "encounter_id": enc_id,
+                        "icd9_code": str(code),
+                        "diagnosis_position": pos,
+                        "icd9_chapter": _classify_icd9(str(code)),
+                    }
+                )
+
+    diag_df = pd.DataFrame(diag_rows) if diag_rows else pd.DataFrame(
+        columns=["encounter_id", "icd9_code", "diagnosis_position", "icd9_chapter"]
+    )
+    diag_table = f"{table_name}_diag"
+    with con.begin() as txn:
+        txn.execute(text(f"DROP TABLE IF EXISTS [{diag_table}]"))
+    diag_df.to_sql(diag_table, con=con, if_exists="replace", index=False, chunksize=5000)
+
+    # Mark as done
+    with con.begin() as txn:
+        txn.execute(
+            text("UPDATE _datasets SET enrichment_status='done' WHERE table_name=:tn"),
+            {"tn": table_name},
+        )
+
+    logger.info(
+        "Enrichment done for %s: meds=%d rows, diag=%d rows",
+        table_name,
+        len(meds_df),
+        len(diag_df),
+    )
+    return EnrichmentResult(meds_rows=len(meds_df), diag_rows=len(diag_df))
+
+
+# ---------------------------------------------------------------------------
+# Drop dataset
+# ---------------------------------------------------------------------------
+
+def drop_dataset(table_name: str, con: Engine) -> None:
+    """
+    Drop the base table plus any derived enrichment tables, then remove from registry.
+
+    Args:
+        table_name: Base table name registered in _datasets.
+        con: SQLAlchemy engine for data.db.
+    """
+    derived = [f"{table_name}_meds", f"{table_name}_diag"]
+    with con.begin() as txn:
+        for t in [table_name] + derived:
+            txn.execute(text(f"DROP TABLE IF EXISTS [{t}]"))
+        txn.execute(
+            text("DELETE FROM _datasets WHERE table_name = :tn"),
+            {"tn": table_name},
+        )
+    logger.info("Dropped dataset and derived tables for: %s", table_name)
+
+
+# ---------------------------------------------------------------------------
+# Registry helpers
+# ---------------------------------------------------------------------------
+
+def list_datasets(con: Engine) -> list[dict]:
+    """Return all registered datasets as a list of dicts."""
+    with con.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, table_name, display_name, dataset_type, "
+                "enrichment_status, row_count, col_count, uploaded_at "
+                "FROM _datasets ORDER BY id DESC"
+            )
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "table_name": r[1],
+            "display_name": r[2],
+            "dataset_type": r[3],
+            "enrichment_status": r[4],
+            "row_count": r[5],
+            "col_count": r[6],
+            "uploaded_at": r[7],
+        }
+        for r in rows
+    ]
+
+
+def get_dataset_meta(table_name: str, con: Engine) -> dict | None:
+    """Return full metadata dict for one dataset, or None if not found."""
+    with con.connect() as conn:
+        row = conn.execute(
+            text("SELECT * FROM _datasets WHERE table_name = :tn"),
+            {"tn": table_name},
+        ).fetchone()
+    if row is None:
+        return None
+    keys = ["id", "table_name", "display_name", "dataset_type", "enrichment_status",
+            "row_count", "col_count", "columns", "checksum", "uploaded_at"]
+    result = dict(zip(keys, row))
+    if result.get("columns"):
+        result["columns"] = json.loads(result["columns"])
+    return result

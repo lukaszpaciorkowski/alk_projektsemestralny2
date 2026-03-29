@@ -1,40 +1,45 @@
 graph LR
-    subgraph UI ["🖥️ Streamlit App (app/)"]
-        P1["📂 Data Sources"]
-        P2["🔍 Exploration"]
-        P3["📊 Analytics"]
-        P4["📄 Reports"]
-        P5["📐 Architecture"]
+    subgraph UI ["UI - Streamlit App (app/)"]
+        P1["Data Sources\n(page 1)"]
+        P2["Data Exploration\n(page 2)"]
+        P3["Ad Hoc Charts\n(page 3)"]
+        P4["Analytics\n(page 4)"]
+        P5["Reports\n(page 5)"]
+        P6["Architecture\n(page 6)"]
     end
-    subgraph Core ["🔧 app/core/"]
-        PL["pipeline.py\nimport_csv()\nenrich_dataset()"]
+    subgraph Core ["Core Layer (app/core/)"]
+        PL["pipeline.py\nimport_csv · enrich_dataset\ndrop_dataset · list_datasets"]
+        TD["type_detector.py\ndetect_dataset_type\ncolumn signature matching"]
+        RG["registry.py\nREGISTRY dict\nget_functions_for()"]
+        QY["query.py\nfetch_table · Filter\nfetch_column_stats"]
+        CB["chart_builder.py\nbuild_chart()"]
+        subgraph Analytics ["Analytics (app/core/analytics/)"]
+            GA["generic.py\n8 functions\ndescribe · correlation\nvalue_counts · groupby\ncrosstab · distribution\nnull_analysis · dtypes"]
+            DA["diabetes.py\n6 functions\nreadmission_by_group\nhba1c_vs_readmission\nlos_by_readmission\nmedications_vs_los\ntop_diagnoses\nmedication_frequency"]
+        end
     end
-    subgraph Backend ["⚙️ Scripts / Query Layer"]
-        QS["query_helpers.py"]
-        VZ["visualize_helpers.py"]
-        LH["load_helpers.py"]
-        IH["ingest_helpers.py"]
-        DG["docs/diagrams/*.png"]
-    end
-    subgraph Storage ["💾 Storage"]
-        DB[("SQLite DB\ndata/data.db\n+ datasets_registry")]
-        CSV["data/raw/\n*.csv (any dataset)"]
+    subgraph Storage ["Storage"]
+        DB[("data/data.db\n_datasets registry\nds_* tables\nds_*_meds enrichment\nds_*_diag enrichment")]
+        CSV["data/raw/\n*.csv uploads"]
         OUT["outputs/figures/\noutputs/report/"]
     end
 
     P1 --> PL
-    P2 --> QS
-    P3 --> QS
-    P3 --> VZ
-    P4 --> VZ
-    P5 --> DG
+    P1 --> TD
+    P2 --> QY
+    P3 --> CB
+    P4 --> RG
+    P4 --> GA
+    P4 --> DA
+    P5 --> OUT
+    P6 --> OUT
 
-    PL --> IH
-    PL --> LH
-    PL --> VZ
     PL --> DB
-
-    IH --> CSV
-    LH --> DB
-    QS --> DB
-    VZ --> OUT
+    PL --> CSV
+    TD --> PL
+    RG --> GA
+    RG --> DA
+    QY --> DB
+    CB --> DB
+    GA --> OUT
+    DA --> OUT

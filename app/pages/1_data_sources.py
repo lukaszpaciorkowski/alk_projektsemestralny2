@@ -1,185 +1,296 @@
 """
-1_data_sources.py — Data Sources page for the Streamlit app.
+1_data_sources.py — Data Sources page.
 
-Features:
-- CSV file uploader
-- Import pipeline trigger (ingest + load)
-- Active data sources table (DB row counts)
-- Import log expander
+Single upload path for any CSV:
+  1. Upload → preview → type detection badge → Import
+  2. Enrichment panel (for recognised dataset types)
+  3. Loaded datasets table
+  4. Import log
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.components.sidebar import render_sidebar
-from app.state import init_state
+from app.core.pipeline import (
+    DB_PATH,
+    EnrichmentResult,
+    ImportResult,
+    drop_dataset,
+    enrich_dataset,
+    get_engine,
+    import_csv,
+    list_datasets,
+)
+from app.core.type_detector import dataset_type_icon, dataset_type_label, detect_dataset_type
+from app.state import init_state, set_active_dataset
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = "config.json"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_engine():
+    return get_engine(DB_PATH)
 
 
-def _load_config() -> dict:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+def _ensure_db():
+    """Create the bootstrap schema if data.db does not exist yet."""
+    db_file = Path(DB_PATH)
+    if not db_file.exists():
+        from database.create_db import create_registry
+        eng = _get_engine()
+        create_registry(eng)
+    return _get_engine()
 
 
-def _get_engine(config: dict):
-    db_path = config["database"]["path"]
-    if not Path(db_path).exists():
-        return None
-    return create_engine(f"sqlite:///{db_path}", echo=False)
-
-
-def _get_table_counts(engine) -> pd.DataFrame:
-    """Query row counts from all tables."""
-    tables = ["admissions", "patients", "medications", "diagnosis_encounters",
-              "admission_types", "discharge_types", "diagnoses_lookup"]
-    rows = []
-    with engine.connect() as conn:
-        for t in tables:
-            try:
-                result = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).fetchone()
-                rows.append({"Table": t, "Rows": int(result[0])})
-            except Exception:
-                rows.append({"Table": t, "Rows": "N/A"})
-    return pd.DataFrame(rows)
-
-
-def _run_pipeline_script(script: str, config_path: str) -> tuple[bool, str]:
-    """Run a pipeline script and capture output."""
-    try:
-        result = subprocess.run(
-            [sys.executable, script, "--config", config_path],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        output = result.stdout + result.stderr
-        return result.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, "Pipeline script timed out after 300s."
-    except Exception as exc:
-        return False, str(exc)
+def _type_badge(dataset_type: str) -> str:
+    icon = dataset_type_icon(dataset_type)
+    label = dataset_type_label(dataset_type)
+    return f"{icon} {label}"
 
 
 # ---------------------------------------------------------------------------
-# Page layout
+# Page
 # ---------------------------------------------------------------------------
 
 render_sidebar()
-init_state()
+engine = _ensure_db()
+init_state(engine)
 
 st.title("📂 Data Sources")
 st.markdown(
-    "Upload the raw CSV dataset or trigger the full import pipeline. "
-    "The pipeline validates, cleans, and loads data into the SQLite database."
+    "Upload any CSV dataset. The pipeline detects the dataset type automatically "
+    "and offers specialised enrichment for recognised datasets."
 )
 
-try:
-    config = _load_config()
-except FileNotFoundError:
-    st.error("config.json not found. Ensure you are running from the project root.")
-    st.stop()
+# ---------------------------------------------------------------------------
+# Import Section
+# ---------------------------------------------------------------------------
 
-raw_csv_path = config["data"]["raw_csv"]
+with st.container(border=True):
+    st.subheader("Import Dataset")
 
-# ---- File Uploader ----
-st.subheader("Upload Dataset")
-uploaded = st.file_uploader(
-    "Upload diabetic_data.csv",
-    type=["csv"],
-    help="Download from https://www.kaggle.com/datasets/brandao/diabetes",
-)
+    uploaded = st.file_uploader(
+        "Choose a CSV file",
+        type=["csv"],
+        help="Upload any CSV. The system auto-detects dataset type from column names.",
+    )
 
-if uploaded is not None:
-    dest_path = Path(raw_csv_path)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(dest_path, "wb") as f:
-        f.write(uploaded.getbuffer())
-    st.success(f"File saved to `{raw_csv_path}` ({uploaded.size / 1024:.1f} KB)")
-    st.session_state["import_log"].append(f"Uploaded: {uploaded.name} → {raw_csv_path}")
+    col_delim, col_enc, _ = st.columns([1, 1, 2])
+    with col_delim:
+        delimiter = st.selectbox("Delimiter", [",", ";", "\\t", "|"], index=0)
+        if delimiter == "\\t":
+            delimiter = "\t"
+    with col_enc:
+        encoding = st.selectbox("Encoding", ["utf-8", "latin-1", "iso-8859-1"], index=0)
 
-# ---- CSV Status ----
-raw_exists = Path(raw_csv_path).exists()
-if raw_exists:
-    st.info(f"Raw CSV found at `{raw_csv_path}`")
+    if uploaded is not None:
+        # Read preview
+        try:
+            from io import BytesIO
+            raw = uploaded.read()
+            uploaded.seek(0)
+            preview_df = pd.read_csv(
+                BytesIO(raw),
+                delimiter=delimiter,
+                encoding=encoding,
+                nrows=5,
+                low_memory=False,
+            )
+            preview_df.columns = preview_df.columns.str.strip()
+
+            st.markdown("**Preview (5 rows)**")
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+            # Type detection
+            detected_type = detect_dataset_type(preview_df)
+            badge = _type_badge(detected_type)
+            if detected_type != "generic":
+                st.info(
+                    f"**Detected: {badge}**  \n"
+                    "Specialised analytics will be available after import.",
+                    icon="🔍",
+                )
+            else:
+                st.caption(f"Detected type: {badge}")
+
+        except Exception as exc:
+            st.error(f"Cannot preview file: {exc}")
+            preview_df = None
+
+        # Import button
+        if st.button("Import Dataset", type="primary", use_container_width=True):
+            with st.spinner("Importing..."):
+                try:
+                    uploaded.seek(0)
+                    result: ImportResult = import_csv(
+                        uploaded,
+                        con=engine,
+                        delimiter=delimiter,
+                        encoding=encoding,
+                    )
+                    msg = (
+                        f"Imported **{result.display_name}** → `{result.table_name}` "
+                        f"({result.row_count:,} rows, {result.col_count} cols, "
+                        f"type: {_type_badge(result.dataset_type)})"
+                    )
+                    st.success(msg)
+                    st.session_state["import_log"].append(msg)
+
+                    # Set as active dataset
+                    set_active_dataset(
+                        table_name=result.table_name,
+                        display_name=result.display_name,
+                        dataset_type=result.dataset_type,
+                        enrichment_status="none",
+                        meta=[
+                            {
+                                "name": m.name,
+                                "dtype": m.dtype,
+                                "sql_type": m.sql_type,
+                                "nullable": m.nullable,
+                                "unique_count": m.unique_count,
+                            }
+                            for m in result.column_meta
+                        ],
+                    )
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception as exc:
+                    st.error(f"Import failed: {exc}")
+                    logger.exception("Import failed")
+
+# ---------------------------------------------------------------------------
+# Enrichment Panel
+# ---------------------------------------------------------------------------
+
+datasets = list_datasets(engine)
+pending_enrichment = [
+    d for d in datasets
+    if d["dataset_type"] != "generic" and d["enrichment_status"] != "done"
+]
+
+if pending_enrichment:
+    st.divider()
+    for ds in pending_enrichment:
+        with st.container(border=True):
+            icon = dataset_type_icon(ds["dataset_type"])
+            st.markdown(
+                f"### {icon} Enrichment Available — {ds['display_name']}"
+            )
+            if ds["dataset_type"] == "diabetes":
+                st.markdown(
+                    "Enrichment unpivots 24 medication columns into a long-format table "
+                    "and decodes ICD-9 diagnosis codes into chapters. "
+                    "Required for **Medication Frequency** and **Top Diagnoses** analytics."
+                )
+            est = "not yet run" if ds["enrichment_status"] == "none" else "in progress"
+            st.caption(f"Status: {est}")
+
+            if st.button(
+                "Run Enrichment Pipeline",
+                key=f"enrich_{ds['table_name']}",
+                type="primary",
+            ):
+                with st.spinner("Running enrichment (may take 30–60s for large datasets)..."):
+                    try:
+                        result_e: EnrichmentResult = enrich_dataset(
+                            ds["table_name"], ds["dataset_type"], engine
+                        )
+                        msg = (
+                            f"Enrichment complete: {result_e.meds_rows:,} medication rows, "
+                            f"{result_e.diag_rows:,} diagnosis rows."
+                        )
+                        st.success(msg)
+                        st.session_state["import_log"].append(msg)
+                        # Update enrichment status in active session
+                        if st.session_state.get("active_dataset") == ds["table_name"]:
+                            st.session_state["active_enrichment_status"] = "done"
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Enrichment failed: {exc}")
+                        logger.exception("Enrichment failed")
+
+# ---------------------------------------------------------------------------
+# Loaded Datasets Table
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("Loaded Datasets")
+
+if not datasets:
+    st.info("No datasets imported yet. Upload a CSV above.")
 else:
-    st.warning(
-        f"Raw CSV not found at `{raw_csv_path}`. "
-        "Please upload the file above or download it from Kaggle."
-    )
+    for ds in datasets:
+        icon = dataset_type_icon(ds["dataset_type"])
+        enrich_badge = (
+            "✅ done"
+            if ds["enrichment_status"] == "done"
+            else ("⏳ pending" if ds["enrichment_status"] == "pending" else "—")
+        )
+        col_name, col_type, col_rows, col_enrich, col_action = st.columns(
+            [3, 2, 1, 1, 1]
+        )
+        with col_name:
+            st.markdown(f"**{ds['display_name']}**  \n`{ds['table_name']}`")
+        with col_type:
+            st.markdown(f"{icon} {dataset_type_label(ds['dataset_type'])}")
+        with col_rows:
+            st.markdown(f"{ds['row_count']:,}" if ds["row_count"] else "—")
+        with col_enrich:
+            st.markdown(enrich_badge)
+        with col_action:
+            if st.button("✕", key=f"del_{ds['table_name']}", help="Delete dataset"):
+                drop_dataset(ds["table_name"], engine)
+                st.session_state["import_log"].append(
+                    f"Deleted dataset: {ds['display_name']}"
+                )
+                if st.session_state.get("active_dataset") == ds["table_name"]:
+                    st.session_state["active_dataset"] = None
+                st.rerun()
 
-st.divider()
+        # Set active button
+        if st.session_state.get("active_dataset") != ds["table_name"]:
+            if st.button(
+                f"Set as active",
+                key=f"activate_{ds['table_name']}",
+                use_container_width=False,
+            ):
+                meta_raw = ds.get("columns") or []
+                if isinstance(meta_raw, str):
+                    meta_raw = json.loads(meta_raw)
+                set_active_dataset(
+                    table_name=ds["table_name"],
+                    display_name=ds["display_name"],
+                    dataset_type=ds["dataset_type"],
+                    enrichment_status=ds["enrichment_status"],
+                    meta=meta_raw,
+                )
+                st.rerun()
+        else:
+            st.caption("← active")
+        st.divider()
 
-# ---- Import Pipeline ----
-st.subheader("Run Import Pipeline")
+# ---------------------------------------------------------------------------
+# Import Log
+# ---------------------------------------------------------------------------
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    run_ingest = st.button("1. Ingest & Validate", disabled=not raw_exists, use_container_width=True)
-with col2:
-    run_load = st.button(
-        "2. Load to Database",
-        disabled=not Path(config["data"]["processed_csv"]).exists(),
-        use_container_width=True,
-    )
-with col3:
-    run_all = st.button(
-        "Run Full Pipeline",
-        disabled=not raw_exists,
-        type="primary",
-        use_container_width=True,
-    )
-
-log_container = st.empty()
-
-if run_ingest or run_all:
-    with st.spinner("Running ingestion and validation..."):
-        ok, output = _run_pipeline_script("scripts/01_ingest.py", CONFIG_PATH)
-    st.session_state["import_log"].append(f"=== 01_ingest.py ===\n{output}")
-    if ok:
-        st.success("Ingestion complete.")
-    else:
-        st.error("Ingestion failed. See log below.")
-
-if run_load or run_all:
-    with st.spinner("Loading data into database..."):
-        ok, output = _run_pipeline_script("scripts/02_load.py", CONFIG_PATH)
-    st.session_state["import_log"].append(f"=== 02_load.py ===\n{output}")
-    if ok:
-        st.success("Database load complete.")
-        st.session_state["db_loaded"] = True
-    else:
-        st.error("Load failed. See log below.")
-
-# ---- Active Data Sources ----
-st.divider()
-st.subheader("Active Data Sources")
-
-engine = _get_engine(config)
-if engine is not None:
-    counts_df = _get_table_counts(engine)
-    st.dataframe(counts_df, use_container_width=True, hide_index=True)
-else:
-    st.info("Database not yet created. Run the import pipeline above.")
-
-# ---- Import Log ----
-st.divider()
 with st.expander("Import Log", expanded=False):
     log_entries = st.session_state.get("import_log", [])
     if log_entries:
-        st.code("\n\n".join(log_entries), language="text")
+        st.code("\n\n".join(log_entries[-50:]), language="text")
     else:
         st.caption("No import activity yet.")
