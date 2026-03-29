@@ -140,22 +140,43 @@ specialized_fns = [f for f in functions if f.scope != "generic"]
 st.divider()
 st.subheader("Available Analyses")
 
-selected_fn: AnalyticsFunction | None = None
 current_selection = st.session_state.get("selected_analysis")
+all_fns = {f.id: f for f in functions}
+
+cols_per_row = 4
+
+
+def _render_fn_buttons(fns: list[AnalyticsFunction], disabled_ids: set[str]) -> None:
+    """Render a row-based button grid; updates selected_analysis in session state."""
+    for row_start in range(0, len(fns), cols_per_row):
+        row_fns = fns[row_start:row_start + cols_per_row]
+        btn_cols = st.columns(cols_per_row)
+        for bcol, fn in zip(btn_cols, row_fns):
+            with bcol:
+                is_active = st.session_state.get("selected_analysis") == fn.id
+                disabled = fn.id in disabled_ids
+                label_text = fn.label + (" ⚠" if disabled else "")
+                # No st.rerun() — Streamlit already reruns on button click.
+                # Calling st.rerun() here causes a double-rerun that drops
+                # the session-state write made in this same pass.
+                if st.button(
+                    label_text,
+                    key=f"fn_{fn.id}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                    help=fn.description + (" (requires enrichment)" if disabled else ""),
+                    disabled=disabled,
+                ):
+                    if st.session_state.get("selected_analysis") != fn.id:
+                        # New function selected — clear any cached result
+                        st.session_state["selected_analysis"] = fn.id
+                        st.session_state["analytics_result"] = None
+                        st.session_state["analytics_error"] = None
+
 
 # Generic group
 st.markdown("**GENERIC — works on any dataset**")
-cols_per_row = 4
-for row_start in range(0, len(generic_fns), cols_per_row):
-    row_fns = generic_fns[row_start:row_start + cols_per_row]
-    cols = st.columns(cols_per_row)
-    for col, fn in zip(cols, row_fns):
-        with col:
-            is_active = current_selection == fn.id
-            btn_type = "primary" if is_active else "secondary"
-            if st.button(fn.label, key=f"fn_{fn.id}", use_container_width=True, type=btn_type, help=fn.description):
-                st.session_state["selected_analysis"] = fn.id
-                st.rerun()
+_render_fn_buttons(generic_fns, disabled_ids=set())
 
 # Specialized group
 if specialized_fns:
@@ -163,33 +184,15 @@ if specialized_fns:
     label = dataset_type_label(dataset_type)
     st.markdown(f"**SPECIALISED — {icon} {label}**")
 
-    if enrichment_status != "done":
-        needs_enrichment = [f for f in specialized_fns if f.requires_enrichment]
-        if needs_enrichment:
-            st.warning(
-                f"**{', '.join(f.label for f in needs_enrichment)}** require enrichment. "
-                "Run enrichment on the **Data Sources** page."
-            )
+    needs_enrichment = {f.id for f in specialized_fns if f.requires_enrichment}
+    if enrichment_status != "done" and needs_enrichment:
+        st.warning(
+            f"**{', '.join(all_fns[fid].label for fid in needs_enrichment if fid in all_fns)}**"
+            " require enrichment. Run enrichment on the **Data Sources** page."
+        )
 
-    for row_start in range(0, len(specialized_fns), cols_per_row):
-        row_fns = specialized_fns[row_start:row_start + cols_per_row]
-        cols = st.columns(cols_per_row)
-        for col, fn in zip(cols, row_fns):
-            with col:
-                is_active = current_selection == fn.id
-                btn_type = "primary" if is_active else "secondary"
-                disabled = fn.requires_enrichment and enrichment_status != "done"
-                label_text = fn.label + (" ⚠" if disabled else "")
-                if st.button(
-                    label_text,
-                    key=f"fn_{fn.id}",
-                    use_container_width=True,
-                    type=btn_type,
-                    help=fn.description + (" (requires enrichment)" if disabled else ""),
-                    disabled=disabled,
-                ):
-                    st.session_state["selected_analysis"] = fn.id
-                    st.rerun()
+    disabled_ids = needs_enrichment if enrichment_status != "done" else set()
+    _render_fn_buttons(specialized_fns, disabled_ids=disabled_ids)
 
 # ---- Parameters + Run ----
 selected_fn_id = st.session_state.get("selected_analysis")
@@ -197,12 +200,13 @@ if not selected_fn_id:
     st.info("Select an analysis above to get started.")
     st.stop()
 
-# Find the function
-all_fns = {f.id: f for f in functions}
 selected_fn = all_fns.get(selected_fn_id)
 if not selected_fn:
+    # Selected function no longer exists (e.g. switched dataset type)
     st.session_state["selected_analysis"] = None
-    st.rerun()
+    st.session_state["analytics_result"] = None
+    st.info("Select an analysis above to get started.")
+    st.stop()
 
 st.divider()
 st.markdown(f"**Selected: {selected_fn.label}**")
@@ -218,10 +222,21 @@ if selected_fn.params:
             with param_cols[i % len(param_cols)]:
                 collected_params[param.name] = _render_param_widget(param, meta_raw)
 
-run_clicked = st.button("Run Analysis", type="primary", use_container_width=True)
+# Parameterless functions run immediately on selection.
+# Parameterized functions require an explicit "Run Analysis" click.
+no_params = not selected_fn.params
+cached = st.session_state.get("analytics_result")
+cached_is_current = cached and cached.get("fn_id") == selected_fn_id
+
+run_clicked = False
+if no_params:
+    if not cached_is_current:
+        run_clicked = True   # auto-run
+else:
+    run_clicked = st.button("Run Analysis", type="primary", use_container_width=True)
 
 if run_clicked:
-    with st.spinner("Running analysis..."):
+    with st.spinner("Running…"):
         try:
             from sqlalchemy import text as sql_text
             with engine.connect() as conn:
@@ -235,7 +250,7 @@ if run_clicked:
             result_df, fig = selected_fn.fn(df, meta_raw, **collected_params)
 
             st.session_state["analytics_result"] = {
-                "fn_id": selected_fn.id,
+                "fn_id": selected_fn_id,
                 "fn_label": selected_fn.label,
                 "result_df": result_df,
                 "fig": fig,
@@ -253,11 +268,6 @@ if run_clicked:
 analytics_error = st.session_state.get("analytics_error")
 analytics_result = st.session_state.get("analytics_result")
 
-# Clear result when a different function is selected
-if analytics_result and analytics_result.get("fn_id") != selected_fn_id:
-    st.session_state["analytics_result"] = None
-    analytics_result = None
-
 if analytics_error:
     kind, msg = analytics_error
     if kind == "enrichment":
@@ -265,7 +275,7 @@ if analytics_error:
         st.page_link("views/1_data_sources.py", label="Go to Data Sources →", icon="📂")
     else:
         st.error(f"Analysis failed: {msg}")
-elif analytics_result:
+elif analytics_result and analytics_result.get("fn_id") == selected_fn_id:
     result_df = analytics_result["result_df"]
     fig = analytics_result["fig"]
     fn_label = analytics_result["fn_label"]
@@ -289,6 +299,6 @@ elif analytics_result:
         )
     with btn2:
         if fig is not None:
-            if st.button("Add to Report"):
+            if st.button("Add to Report", key="add_to_report"):
                 add_to_report(fig, fn_label)
                 st.success(f"Added '{fn_label}' to report.")
