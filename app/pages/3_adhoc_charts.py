@@ -1,0 +1,238 @@
+"""
+3_adhoc_charts.py — Ad Hoc Charts page.
+
+Allows visual chart building on any imported dataset.
+Chart type selection drives dynamic axis controls.
+Results can be added to the report or downloaded as PNG.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import streamlit as st
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from app.components.chart_builder import build_chart
+from app.components.sidebar import render_sidebar
+from app.core.pipeline import DB_PATH, get_engine, list_datasets
+from app.core.type_detector import dataset_type_icon
+from app.state import add_to_report, init_state, set_active_dataset
+
+CHART_TYPES = ["Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap"]
+
+AGG_FUNCS = ["mean", "sum", "count", "min", "max", "median"]
+
+
+def _get_engine():
+    return get_engine(DB_PATH)
+
+
+def _col_category(dtype: str) -> str:
+    if "int" in dtype or "float" in dtype:
+        return "numeric"
+    return "categorical"
+
+
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
+
+render_sidebar()
+
+try:
+    engine = _get_engine()
+except Exception:
+    engine = None
+
+init_state(engine)
+
+st.title("📈 Ad Hoc Charts")
+st.markdown("Build interactive charts from any imported dataset.")
+
+if engine is None:
+    st.warning("Database not found. Import a dataset on the **Data Sources** page first.")
+    st.stop()
+
+datasets = list_datasets(engine)
+if not datasets:
+    st.warning("No datasets imported yet. Go to **Data Sources** to upload a CSV.")
+    st.stop()
+
+# ---- Dataset Selector ----
+ds_options = {
+    f"{dataset_type_icon(d['dataset_type'])} {d['display_name']} "
+    f"({d['row_count']:,} rows)": d
+    for d in datasets
+}
+
+active_name = st.session_state.get("active_dataset_name", "")
+default_idx = 0
+for idx, label in enumerate(ds_options):
+    if active_name and active_name in label:
+        default_idx = idx
+        break
+
+selected_label = st.selectbox("Dataset", list(ds_options.keys()), index=default_idx)
+selected_ds = ds_options[selected_label]
+table_name = selected_ds["table_name"]
+
+meta_raw = selected_ds.get("columns") or []
+if isinstance(meta_raw, str):
+    meta_raw = json.loads(meta_raw)
+
+# Sync active dataset
+if st.session_state.get("active_dataset") != table_name:
+    set_active_dataset(
+        table_name=table_name,
+        display_name=selected_ds["display_name"],
+        dataset_type=selected_ds["dataset_type"],
+        enrichment_status=selected_ds["enrichment_status"],
+        meta=meta_raw,
+    )
+
+all_cols = [c["name"] for c in meta_raw]
+numeric_cols = [c["name"] for c in meta_raw if _col_category(c.get("dtype", "")) == "numeric"]
+cat_cols = [c["name"] for c in meta_raw if _col_category(c.get("dtype", "")) == "categorical"]
+
+# ---- Chart Builder ----
+st.divider()
+with st.container(border=True):
+    st.subheader("Chart Builder")
+
+    b_col1, b_col2 = st.columns([1, 3])
+    with b_col1:
+        chart_type = st.selectbox("Chart type", CHART_TYPES)
+
+    # Dynamic axis controls based on chart type
+    x_col = y_col = color_col = facet_col = None
+    agg_func = "mean"
+    bins = 30
+
+    if chart_type == "Histogram":
+        x_col = st.selectbox("Column (X)", numeric_cols or all_cols, key="adhoc_x")
+        color_col = st.selectbox(
+            "Color (optional)", ["None"] + cat_cols, key="adhoc_color"
+        )
+        bins = st.slider("Bins", min_value=5, max_value=100, value=30)
+        color_col = None if color_col == "None" else color_col
+
+    elif chart_type == "Scatter":
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            x_col = st.selectbox("X axis", numeric_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            color_col = st.selectbox(
+                "Color (optional)", ["None"] + all_cols, key="adhoc_color"
+            )
+            color_col = None if color_col == "None" else color_col
+
+    elif chart_type == "Box":
+        c1, c2 = st.columns(2)
+        with c1:
+            x_col = st.selectbox("X axis (categorical)", cat_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
+
+    elif chart_type == "Heatmap":
+        c1, c2 = st.columns(2)
+        with c1:
+            x_col = st.selectbox("X axis (categorical)", cat_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (categorical)", cat_cols or all_cols, key="adhoc_y")
+
+    else:  # Bar / Line
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 2, 2])
+        with c1:
+            x_col = st.selectbox("X axis", all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            agg_func = st.selectbox("Agg", AGG_FUNCS, key="adhoc_agg")
+        with c4:
+            color_col = st.selectbox(
+                "Color (optional)", ["None"] + cat_cols, key="adhoc_color"
+            )
+            color_col = None if color_col == "None" else color_col
+        with c5:
+            facet_col = st.selectbox(
+                "Facet (optional)", ["None"] + cat_cols, key="adhoc_facet"
+            )
+            facet_col = None if facet_col == "None" else facet_col
+
+    btn_col, reset_col = st.columns([1, 5])
+    with btn_col:
+        plot_clicked = st.button("Plot", type="primary", use_container_width=True)
+    with reset_col:
+        if st.button("Reset"):
+            st.rerun()
+
+# ---- Chart Output ----
+if plot_clicked and x_col:
+    with st.spinner("Building chart..."):
+        fig = build_chart(
+            table_name=table_name,
+            engine=engine,
+            chart_type=chart_type,
+            x_col=x_col,
+            y_col=y_col,
+            color_col=color_col,
+            facet_col=facet_col,
+            agg_func=agg_func,
+            bins=bins,
+        )
+
+    st.session_state.setdefault("adhoc_chart_history", [])
+    chart_title = f"{chart_type} — {x_col}" + (f" × {y_col}" if y_col else "")
+    if color_col:
+        chart_title += f" by {color_col}"
+
+    st.session_state["adhoc_chart_history"].append(
+        {"title": chart_title, "fig": fig}
+    )
+
+    with st.container(border=True):
+        st.plotly_chart(fig, use_container_width=True)
+
+        btn1, btn2 = st.columns(2)
+        with btn1:
+            if st.button("Add to Report"):
+                add_to_report(fig, chart_title)
+                st.success(f"Added '{chart_title}' to report.")
+        with btn2:
+            # Plotly PNG download (requires kaleido)
+            try:
+                import io
+                img_bytes = fig.to_image(format="png", width=1200, height=700)
+                st.download_button(
+                    "Download PNG",
+                    data=img_bytes,
+                    file_name=f"{chart_title.replace(' ', '_')}.png",
+                    mime="image/png",
+                )
+            except Exception:
+                st.caption("Install `kaleido` for PNG download.")
+
+# ---- Session History ----
+history = st.session_state.get("adhoc_chart_history", [])
+if history:
+    st.divider()
+    st.subheader("Session History")
+    for i, item in enumerate(reversed(history)):
+        idx = len(history) - 1 - i
+        h_col1, h_col2, h_col3 = st.columns([6, 1, 1])
+        with h_col1:
+            st.caption(f"{i + 1}. {item['title']}")
+        with h_col2:
+            if st.button("Add to report", key=f"hist_report_{idx}"):
+                add_to_report(item["fig"], item["title"])
+                st.success("Added to report.")
+        with h_col3:
+            if st.button("✕", key=f"hist_rm_{idx}"):
+                st.session_state["adhoc_chart_history"].pop(idx)
+                st.rerun()

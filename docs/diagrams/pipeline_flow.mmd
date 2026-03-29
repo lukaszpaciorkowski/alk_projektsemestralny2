@@ -1,11 +1,21 @@
 flowchart TD
-    A["📥 CSV Download\ndiabetic_data.csv"] --> B["✅ Validate\nnull_threshold · outlier_zscore"]
-    B --> C["🗄️ Load to SQLite\n3NF schema · indexes"]
-    C --> D["🔍 SQL Queries\nGROUP BY · JOIN · WINDOW"]
-    D --> E["📈 Statistical Analysis\npandas · scipy.stats"]
-    E --> F["📊 Visualizations\nplotly · seaborn · matplotlib"]
-    F --> G["📄 Report\nHTML · PDF via fpdf2"]
+    A["CSV Upload\n(any dataset)"] --> B["Type Detection\ndetect_dataset_type(df)\ncolumn signature matching"]
+    B --> C{"Dataset Type?"}
+    C -->|"diabetes"| D1["Type: diabetes\nicon + label shown"]
+    C -->|"generic"| D2["Type: generic\nno special handling"]
+    D1 --> E["Atomic Import\nimport_csv()\ndf.to_sql + _datasets registry\nchecksum dedup"]
+    D2 --> E
+    E --> F{"Enrichment\nRequired?"}
+    F -->|"diabetes only"| G["enrich_dataset()\nUnpivot 23 med columns\nDecode diag_1/2/3 via ICD-9\nCreate ds_*_meds + ds_*_diag"]
+    F -->|"generic"| H["No enrichment\nenrichment_status = none"]
+    G --> I["enrichment_status = done"]
+    H --> J["Analytics Registry\nget_functions_for(dataset_type)"]
+    I --> J
+    J --> K["Generic Functions\n8 available for all datasets\ndescribe, correlation, groupby..."]
+    J --> L["Diabetes Functions\n6 available for diabetes only\nreadmission, HbA1c, diagnoses..."]
+    K --> M["(DataFrame, Figure | None)\nresult contract"]
+    L --> M
+    M --> N["Streamlit UI\nAd Hoc Charts / Analytics\nReports"]
 
-    B -.->|"null_threshold=0.3\noutlier_zscore=3.0"| B
-    D -.->|"age_bins\nreadmission_binary"| D
-    F -.->|"top_n_diagnoses\npalette"| F
+    E -.->|"duplicate checksum"| ERR["ImportError\nDuplicate rejected"]
+    L -.->|"enrichment_status != done"| ENRERR["EnrichmentRequiredError\nuser prompted to enrich"]

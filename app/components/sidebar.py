@@ -4,51 +4,44 @@ sidebar.py — Shared sidebar component for the Streamlit app.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
 import streamlit as st
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+from app.core.pipeline import DB_PATH, get_engine
+from app.core.type_detector import dataset_type_icon, dataset_type_label
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = "config.json"
 
-
-def _load_config() -> dict:
-    """Load config.json, return empty dict on error."""
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
-
-
-def _get_db_status(config: dict) -> tuple[bool, int, str]:
+def _get_db_status() -> tuple[bool, int, str, str | None]:
     """
-    Check database connectivity and row count.
+    Check database connectivity.
 
     Returns:
-        Tuple of (is_connected: bool, row_count: int, db_path: str).
+        (is_connected, dataset_count, db_path, active_dataset_display)
     """
-    db_path = config.get("database", {}).get("path", "data/diabetes.db")
-    if not Path(db_path).exists():
-        return False, 0, db_path
+    db_file = Path(DB_PATH)
+    if not db_file.exists():
+        return False, 0, DB_PATH, None
 
     try:
-        engine = create_engine(f"sqlite:///{db_path}", echo=False)
+        engine = get_engine(DB_PATH)
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT COUNT(*) FROM admissions")).fetchone()
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM _datasets")
+            ).fetchone()
             count = int(row[0]) if row else 0
-        return True, count, db_path
+        return True, count, DB_PATH, None
     except Exception as exc:
         logger.warning("DB status check failed: %s", exc)
-        return False, 0, db_path
+        return False, 0, DB_PATH, None
 
 
 def render_sidebar() -> None:
-    """Render the sidebar with database status and project info."""
+    """Render the sidebar with DB status, active dataset badge, and project info."""
     with st.sidebar:
         st.image(
             "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/"
@@ -56,30 +49,38 @@ def render_sidebar() -> None:
             width=80,
         )
         st.markdown("### Patient Data Analysis")
-        st.markdown("*Diabetes 130-US Hospitals*")
+        st.markdown("*Generic Data Pipeline*")
         st.divider()
 
-        config = _load_config()
-        connected, row_count, db_path = _get_db_status(config)
-
-        st.markdown("#### Database Status")
+        # DB Status
+        connected, dataset_count, db_path, _ = _get_db_status()
+        st.markdown("#### Database")
         if connected:
-            st.success(f"Connected — {row_count:,} encounters")
+            st.success(f"Connected — {dataset_count} dataset(s)")
+            st.caption(f"`{db_path}`")
         else:
             st.error("Not connected")
-            st.caption(f"Expected at: `{db_path}`")
-            st.caption("Run the pipeline on the **Data Sources** page.")
+            st.caption(f"Expected: `{db_path}`")
+            st.caption("Import a dataset on **Data Sources**.")
 
-        st.divider()
-        st.markdown("#### Pipeline Config")
-        pipeline = config.get("pipeline", {})
-        if pipeline:
-            st.caption(f"null_threshold: **{pipeline.get('null_threshold', '—')}**")
-            st.caption(f"outlier_zscore: **{pipeline.get('outlier_zscore', '—')}**")
-            st.caption(f"top_n_diagnoses: **{pipeline.get('top_n_diagnoses', '—')}**")
-            st.caption(f"palette: **{pipeline.get('palette', '—')}**")
-        else:
-            st.caption("config.json not found.")
+        # Active Dataset Badge
+        active_name = st.session_state.get("active_dataset_name")
+        active_type = st.session_state.get("active_dataset_type", "generic")
+        if active_name:
+            st.divider()
+            st.markdown("#### Active Dataset")
+            icon = dataset_type_icon(active_type)
+            label = dataset_type_label(active_type)
+            st.markdown(f"{icon} **{active_name}**")
+            st.caption(f"Type: {label}")
+            enrich_status = st.session_state.get("active_enrichment_status", "none")
+            if active_type != "generic":
+                enrich_badge = (
+                    "✅ enriched"
+                    if enrich_status == "done"
+                    else "⚠ not enriched"
+                )
+                st.caption(enrich_badge)
 
         st.divider()
         st.markdown(

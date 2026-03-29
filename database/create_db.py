@@ -1,5 +1,5 @@
 """
-create_db.py — Create SQLite database from schema.sql using SQLAlchemy.
+create_db.py — Create SQLite database from bootstrap.sql using SQLAlchemy.
 
 Usage:
     python database/create_db.py [--config config.json] [--reset]
@@ -8,9 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -21,63 +19,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+BOOTSTRAP_PATH = Path(__file__).parent / "bootstrap.sql"
+DEFAULT_DB_PATH = "data/data.db"
 
 
-def load_config(config_path: str) -> dict:
-    """Load configuration from JSON file."""
-    with open(config_path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def get_engine(config: dict):
-    """Create and return a SQLAlchemy engine from config."""
-    db_path = config["database"]["path"]
-    # Ensure parent directory exists
+def get_engine(db_path: str):
+    """Create and return a SQLAlchemy engine."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     url = f"sqlite:///{db_path}"
     logger.info("Connecting to database: %s", url)
     return create_engine(url, echo=False)
 
 
-def drop_all_tables(engine) -> None:
-    """Drop all application tables in dependency order."""
-    tables = [
-        "medications",
-        "diagnosis_encounters",
-        "admissions",
-        "patients",
-        "diagnoses_lookup",
-        "admission_types",
-        "discharge_types",
-    ]
+def drop_registry(engine) -> None:
+    """Drop the _datasets registry table (and all ds_* tables)."""
     with engine.begin() as conn:
-        conn.execute(text("PRAGMA foreign_keys = OFF"))
-        for table in tables:
-            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
-            logger.info("Dropped table: %s", table)
-        conn.execute(text("PRAGMA foreign_keys = ON"))
-    logger.info("All tables dropped.")
+        # Drop all ds_* dynamic tables
+        rows = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'ds_%'")
+        ).fetchall()
+        for (tname,) in rows:
+            conn.execute(text(f"DROP TABLE IF EXISTS [{tname}]"))
+            logger.info("Dropped table: %s", tname)
+        conn.execute(text("DROP TABLE IF EXISTS _datasets"))
+        logger.info("Dropped _datasets registry table.")
 
 
-def create_all_tables(engine) -> None:
-    """Execute schema.sql to create all tables and indexes."""
-    sql_text = SCHEMA_PATH.read_text(encoding="utf-8")
+def create_registry(engine) -> None:
+    """Execute bootstrap.sql to create the _datasets registry table."""
+    sql_text = BOOTSTRAP_PATH.read_text(encoding="utf-8")
     statements = [s.strip() for s in sql_text.split(";") if s.strip()]
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
-    logger.info("Schema applied — %d statements executed.", len(statements))
+    logger.info("Bootstrap schema applied — %d statements executed.", len(statements))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create the diabetes SQLite database from schema.sql."
+        description="Create the data.db SQLite database from bootstrap.sql."
     )
     parser.add_argument(
-        "--config",
-        default="config.json",
-        help="Path to config.json (default: config.json)",
+        "--db",
+        default=DEFAULT_DB_PATH,
+        help=f"Path to data.db (default: {DEFAULT_DB_PATH})",
     )
     parser.add_argument(
         "--reset",
@@ -86,15 +71,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    engine = get_engine(config)
+    engine = get_engine(args.db)
 
     if args.reset:
         logger.warning("--reset flag detected. Dropping all tables...")
-        drop_all_tables(engine)
+        drop_registry(engine)
 
-    create_all_tables(engine)
-    logger.info("Database ready at: %s", config["database"]["path"])
+    create_registry(engine)
+    logger.info("Database ready at: %s", args.db)
 
 
 if __name__ == "__main__":

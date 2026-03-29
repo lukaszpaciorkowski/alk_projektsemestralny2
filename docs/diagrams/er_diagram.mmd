@@ -1,50 +1,40 @@
 erDiagram
-    patients {
-        int patient_id PK
-        string race
-        string gender
-        string age_group
-    }
-    admission_types {
+    _datasets {
         int id PK
-        string description
+        string table_name UK
+        string display_name
+        string dataset_type
+        string enrichment_status
+        int row_count
+        int col_count
+        string columns
+        string checksum
+        string uploaded_at
     }
-    discharge_types {
-        int id PK
-        string description
+    ds_DYNAMIC {
+        any col_1
+        any col_2
+        any col_N
     }
-    admissions {
-        int encounter_id PK
-        int patient_id FK
-        int admission_type_id FK
-        int discharge_type_id FK
-        int time_in_hospital
-        int num_lab_procedures
-        int num_medications
-        int num_diagnoses
-        string hba1c_result
-        string readmission
+    ds_DYNAMIC_meds {
+        int encounter_id FK
+        string drug
+        string dosage
+    }
+    ds_DYNAMIC_diag {
+        int encounter_id FK
+        string icd9_code
+        string icd9_description
+        string icd9_category
+        int diagnosis_position
     }
     diagnoses_lookup {
         string icd9_code PK
         string description
         string category
     }
-    diagnosis_encounters {
-        int id PK
-        int encounter_id FK
-        string icd9_code FK
-        int diagnosis_position
-    }
-    medications {
-        int id PK
-        int encounter_id FK
-        string drug_name
-        string change_indicator
-    }
-    patients ||--o{ admissions : "has"
-    admission_types ||--o{ admissions : "typed as"
-    discharge_types ||--o{ admissions : "discharged as"
-    admissions ||--o{ medications : "prescribed"
-    admissions ||--o{ diagnosis_encounters : "coded with"
-    diagnoses_lookup ||--o{ diagnosis_encounters : "used in"
+
+    _datasets ||--|| ds_DYNAMIC : "registered as table_name"
+    ds_DYNAMIC ||--o{ ds_DYNAMIC_meds : "enriched into (diabetes only)"
+    ds_DYNAMIC ||--o{ ds_DYNAMIC_diag : "enriched into (diabetes only)"
+    diagnoses_lookup ||--o{ ds_DYNAMIC_diag : "decoded via icd9_code"
