@@ -12,5 +12,6 @@ CREATE TABLE IF NOT EXISTS _datasets (
     col_count         INTEGER,
     columns           TEXT,
     checksum          TEXT,
-    uploaded_at       TEXT    NOT NULL
+    uploaded_at       TEXT    NOT NULL,
+    description       TEXT    NOT NULL DEFAULT ''
 );

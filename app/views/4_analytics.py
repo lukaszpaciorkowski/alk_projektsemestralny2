@@ -127,6 +127,8 @@ selected_ds = ds_options[selected_label]
 table_name = selected_ds["table_name"]
 dataset_type = selected_ds["dataset_type"]
 enrichment_status = selected_ds.get("enrichment_status", "none")
+if selected_ds.get("description"):
+    st.caption(selected_ds["description"])
 
 meta_raw = selected_ds.get("columns") or []
 if isinstance(meta_raw, str):

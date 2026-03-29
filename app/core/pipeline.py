@@ -160,6 +160,7 @@ def import_csv(
     config: dict | None = None,
     delimiter: str = ",",
     encoding: str = "utf-8",
+    description: str = "",
 ) -> ImportResult:
     """
     Full import flow: read → validate → detect → create table → register.
@@ -253,10 +254,10 @@ def import_csv(
                 """
                 INSERT INTO _datasets
                     (table_name, display_name, dataset_type, enrichment_status,
-                     row_count, col_count, columns, checksum, uploaded_at)
+                     row_count, col_count, columns, checksum, uploaded_at, description)
                 VALUES
                     (:table_name, :display_name, :dataset_type, 'none',
-                     :row_count, :col_count, :columns, :checksum, :uploaded_at)
+                     :row_count, :col_count, :columns, :checksum, :uploaded_at, :description)
                 """
             ),
             {
@@ -268,6 +269,7 @@ def import_csv(
                 "columns": columns_json,
                 "checksum": checksum,
                 "uploaded_at": uploaded_at,
+                "description": description,
             },
         )
 
@@ -480,7 +482,8 @@ def list_datasets(con: Engine) -> list[dict]:
         rows = conn.execute(
             text(
                 "SELECT id, table_name, display_name, dataset_type, "
-                "enrichment_status, row_count, col_count, columns, uploaded_at "
+                "enrichment_status, row_count, col_count, columns, uploaded_at, "
+                "COALESCE(description, '') "
                 "FROM _datasets ORDER BY id DESC"
             )
         ).fetchall()
@@ -502,8 +505,18 @@ def list_datasets(con: Engine) -> list[dict]:
             "col_count": r[6],
             "columns": columns_val,
             "uploaded_at": r[8],
+            "description": r[9],
         })
     return result
+
+
+def update_description(table_name: str, description: str, con: Engine) -> None:
+    """Update the human-readable description for a registered dataset."""
+    with con.begin() as txn:
+        txn.execute(
+            text("UPDATE _datasets SET description = :desc WHERE table_name = :tn"),
+            {"desc": description, "tn": table_name},
+        )
 
 
 def get_dataset_meta(table_name: str, con: Engine) -> dict | None:

@@ -30,6 +30,7 @@ from app.core.pipeline import (
     get_engine,
     import_csv,
     list_datasets,
+    update_description,
 )
 from app.core.type_detector import dataset_type_icon, dataset_type_label, detect_dataset_type
 from app.state import init_state, set_active_dataset
@@ -235,17 +236,17 @@ if not datasets:
     st.info("No datasets imported yet. Upload a CSV above.")
 else:
     for ds in datasets:
+        tn = ds["table_name"]
         icon = dataset_type_icon(ds["dataset_type"])
         enrich_badge = (
             "✅ done"
             if ds["enrichment_status"] == "done"
             else ("⏳ pending" if ds["enrichment_status"] == "pending" else "—")
         )
-        col_name, col_type, col_rows, col_enrich, col_action = st.columns(
-            [3, 2, 1, 1, 1]
-        )
+
+        col_name, col_type, col_rows, col_enrich, col_action = st.columns([3, 2, 1, 1, 1])
         with col_name:
-            st.markdown(f"**{ds['display_name']}**  \n`{ds['table_name']}`")
+            st.markdown(f"**{ds['display_name']}**  \n`{tn}`")
         with col_type:
             st.markdown(f"{icon} {dataset_type_label(ds['dataset_type'])}")
         with col_rows:
@@ -253,27 +254,56 @@ else:
         with col_enrich:
             st.markdown(enrich_badge)
         with col_action:
-            if st.button("✕", key=f"del_{ds['table_name']}", help="Delete dataset"):
-                drop_dataset(ds["table_name"], engine)
-                st.session_state["import_log"].append(
-                    f"Deleted dataset: {ds['display_name']}"
-                )
-                if st.session_state.get("active_dataset") == ds["table_name"]:
+            if st.button("✕", key=f"del_{tn}", help="Delete dataset"):
+                drop_dataset(tn, engine)
+                st.session_state["import_log"].append(f"Deleted dataset: {ds['display_name']}")
+                if st.session_state.get("active_dataset") == tn:
                     st.session_state["active_dataset"] = None
                 st.rerun()
 
+        # Description row
+        current_desc = ds.get("description") or ""
+        edit_key = f"edit_desc_{tn}"
+        if not st.session_state.get(edit_key, False):
+            # Display mode
+            desc_col, btn_col = st.columns([9, 1])
+            with desc_col:
+                if current_desc:
+                    st.caption(current_desc)
+                else:
+                    st.caption("_No description. Click ✏️ to add one._")
+            with btn_col:
+                if st.button("✏️", key=f"open_edit_{tn}", help="Edit description"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
+        else:
+            # Edit mode
+            new_desc = st.text_area(
+                "Description",
+                value=current_desc,
+                key=f"desc_text_{tn}",
+                height=80,
+                label_visibility="collapsed",
+            )
+            save_col, cancel_col, _ = st.columns([1, 1, 6])
+            with save_col:
+                if st.button("Save", key=f"save_desc_{tn}", type="primary"):
+                    update_description(tn, new_desc, engine)
+                    st.session_state[edit_key] = False
+                    st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key=f"cancel_desc_{tn}"):
+                    st.session_state[edit_key] = False
+                    st.rerun()
+
         # Set active button
-        if st.session_state.get("active_dataset") != ds["table_name"]:
-            if st.button(
-                f"Set as active",
-                key=f"activate_{ds['table_name']}",
-                use_container_width=False,
-            ):
+        if st.session_state.get("active_dataset") != tn:
+            if st.button("Set as active", key=f"activate_{tn}"):
                 meta_raw = ds.get("columns") or []
                 if isinstance(meta_raw, str):
                     meta_raw = json.loads(meta_raw)
                 set_active_dataset(
-                    table_name=ds["table_name"],
+                    table_name=tn,
                     display_name=ds["display_name"],
                     dataset_type=ds["dataset_type"],
                     enrichment_status=ds["enrichment_status"],

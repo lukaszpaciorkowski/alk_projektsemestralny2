@@ -167,6 +167,8 @@ for idx, label in enumerate(ds_options):
 selected_label = st.selectbox("Dataset", list(ds_options.keys()), index=default_idx)
 selected_ds = ds_options[selected_label]
 table_name = selected_ds["table_name"]
+if selected_ds.get("description"):
+    st.caption(selected_ds["description"])
 
 # Load column metadata
 meta_raw = selected_ds.get("columns") or []
