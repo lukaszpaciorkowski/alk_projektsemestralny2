@@ -979,3 +979,77 @@ def run_time_series(
         yaxis_title=value_col,
     )
     return result_df, fig
+
+
+# ---------------------------------------------------------------------------
+# 18. Geographic Summary (Choropleth)
+# ---------------------------------------------------------------------------
+
+def run_geo_summary(
+    df: pd.DataFrame,
+    meta: list[dict],
+    location_col: str = "",
+    value_col: str = "",
+    agg: str = "mean",
+    **params: Any,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    """Aggregate by a location column and render a choropleth world map."""
+    all_cols = list(df.columns)
+
+    # Auto-select location column: prefer columns with 'country'/'geo'/'location' in name
+    if not location_col or location_col not in df.columns:
+        for col in all_cols:
+            if any(kw in col.lower() for kw in ("country", "geo", "location", "nation", "region")):
+                location_col = col
+                break
+        if not location_col or location_col not in df.columns:
+            location_col = all_cols[0] if all_cols else None
+
+    if not location_col:
+        return pd.DataFrame({"error": ["No location column found."]}), None
+
+    num_cols = _numeric_cols(df)
+    if not value_col or value_col not in df.columns:
+        value_col = num_cols[0] if num_cols else None
+    if not value_col:
+        return pd.DataFrame({"error": ["No numeric value column found."]}), None
+
+    if location_col == value_col:
+        return pd.DataFrame({"error": ["Location column and value column must be different."]}), None
+
+    subset = df[[location_col, value_col]].dropna()
+    if subset.empty:
+        return pd.DataFrame({"error": ["No data after dropping nulls."]}), None
+
+    fn_map = {"mean": "mean", "sum": "sum", "count": "count",
+              "min": "min", "max": "max", "median": "median"}
+    fn = fn_map.get(agg, "mean")
+    if fn == "count":
+        agg_df = subset.groupby(location_col).size().reset_index(name=value_col)
+    else:
+        agg_df = subset.groupby(location_col)[value_col].agg(fn).reset_index()
+
+    agg_df = agg_df.sort_values(value_col, ascending=False).reset_index(drop=True)
+    agg_df[value_col] = agg_df[value_col].round(4)
+
+    # Auto-detect location mode
+    sample = agg_df[location_col].dropna().astype(str).head(50)
+    avg_len = sample.str.len().mean() if not sample.empty else 10
+    pct_upper = sample.str.isupper().mean() if not sample.empty else 0
+    location_mode = "ISO-3" if (avg_len <= 3.5 and pct_upper >= 0.7) else "country names"
+
+    fig = px.choropleth(
+        agg_df,
+        locations=location_col,
+        color=value_col,
+        locationmode=location_mode,
+        color_continuous_scale="Viridis",
+        title=f"Geographic Summary: {agg}({value_col}) by {location_col}",
+        projection="natural earth",
+    )
+    fig.update_layout(
+        coloraxis_colorbar={"title": f"{agg}({value_col})"},
+        margin={"r": 0, "l": 0, "t": 40, "b": 0},
+        height=500,
+    )
+    return agg_df, fig

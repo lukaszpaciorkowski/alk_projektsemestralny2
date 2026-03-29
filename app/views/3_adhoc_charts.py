@@ -22,9 +22,16 @@ from app.core.pipeline import DB_PATH, get_engine, list_datasets
 from app.core.type_detector import dataset_type_icon
 from app.state import add_to_report, init_state, set_active_dataset
 
-CHART_TYPES = ["Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap"]
+CHART_TYPES = ["Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap", "Choropleth Map"]
 
 AGG_FUNCS = ["mean", "sum", "count", "min", "max", "median"]
+
+LOCATION_MODES = ["Auto-detect", "Country names", "ISO-3 codes"]
+_LOCATION_MODE_MAP = {
+    "Auto-detect": "auto",
+    "Country names": "country names",
+    "ISO-3 codes": "ISO-3",
+}
 
 
 def _get_engine():
@@ -111,8 +118,25 @@ with st.container(border=True):
     x_col = y_col = color_col = facet_col = None
     agg_func = "mean"
     bins = 30
+    location_mode = "auto"
 
-    if chart_type == "Histogram":
+    if chart_type == "Choropleth Map":
+        c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
+        with c1:
+            x_col = st.selectbox("Location column", all_cols, key="adhoc_x",
+                                 help="Column with country names or ISO codes")
+        with c2:
+            y_col = st.selectbox("Value column (numeric)", numeric_cols or all_cols,
+                                 key="adhoc_y")
+        with c3:
+            agg_func = st.selectbox("Aggregation", AGG_FUNCS, key="adhoc_agg")
+        with c4:
+            loc_mode_label = st.selectbox("Location mode", LOCATION_MODES,
+                                          key="adhoc_locmode")
+            location_mode = _LOCATION_MODE_MAP[loc_mode_label]
+        st.caption("🗺️ Colors countries by the aggregated value. Uses Plotly's built-in world geometry — no extra packages needed.")
+
+    elif chart_type == "Histogram":
         x_col = st.selectbox("Column (X)", numeric_cols or all_cols, key="adhoc_x")
         color_col = st.selectbox(
             "Color (optional)", ["None"] + cat_cols, key="adhoc_color"
@@ -185,6 +209,7 @@ if plot_clicked and x_col:
             facet_col=facet_col,
             agg_func=agg_func,
             bins=bins,
+            location_mode=location_mode,
         )
 
     st.session_state.setdefault("adhoc_chart_history", [])

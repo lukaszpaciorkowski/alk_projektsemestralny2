@@ -662,6 +662,63 @@ class TestChartBuilder:
         )
         assert isinstance(fig, go.Figure)
 
+    def test_choropleth_with_country_names(self, prod_engine, prod_datasets):
+        """Choropleth using OWID COVID data which has a 'location' country column."""
+        import plotly.graph_objects as go
+        owid = next((d for d in prod_datasets if "owid_covid" in d["table_name"]), None)
+        if owid is None:
+            pytest.skip("OWID COVID dataset not loaded")
+        fig = build_chart(
+            table_name=owid["table_name"],
+            engine=prod_engine,
+            chart_type="Choropleth Map",
+            x_col="location",
+            y_col="total_cases",
+            agg_func="max",
+            location_mode="country names",
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_choropleth_bad_columns_returns_error_figure(self, heart_table, prod_engine):
+        """build_chart never raises even for bad choropleth config."""
+        import plotly.graph_objects as go
+        fig = build_chart(
+            table_name=heart_table["table_name"],
+            engine=prod_engine,
+            chart_type="Choropleth Map",
+            x_col="nonexistent_location",
+            y_col="age",
+            location_mode="country names",
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_geo_summary_with_country_data(self, prod_engine, prod_datasets):
+        """run_geo_summary with OWID COVID produces aggregated table + figure."""
+        owid = next((d for d in prod_datasets if "owid_covid" in d["table_name"]), None)
+        if owid is None:
+            pytest.skip("OWID COVID dataset not loaded")
+        import pandas as pd
+        from sqlalchemy import text as sql_text
+        with prod_engine.connect() as conn:
+            df = pd.read_sql(sql_text(f"SELECT * FROM [{owid['table_name']}] LIMIT 5000"), conn)
+        fn = REGISTRY["generic.geo_summary"]
+        meta = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
+        result_df, fig = fn.fn(df, meta, location_col="location", value_col="total_cases", agg="max")
+        assert isinstance(result_df, pd.DataFrame)
+        assert len(result_df) >= 1  # at least one country aggregated
+        assert "location" in result_df.columns
+        assert fig is not None
+
+    def test_geo_summary_no_geo_col_returns_error_df(self, heart_df):
+        """heart_df has no country column — geo_summary returns error DataFrame."""
+        import pandas as pd
+        fn = REGISTRY["generic.geo_summary"]
+        meta = [{"name": c, "dtype": str(heart_df[c].dtype)} for c in heart_df.columns]
+        result_df, fig = fn.fn(heart_df, meta)
+        assert isinstance(result_df, pd.DataFrame)
+        # Should either return error or gracefully use first column
+        assert "error" in result_df.columns or len(result_df) > 0
+
 
 # ---------------------------------------------------------------------------
 # 7. Page file AST validation

@@ -1,7 +1,7 @@
 """
 chart_builder.py — build_chart() dispatcher for Ad Hoc Charts page.
 
-Supported chart types: Bar, Line, Scatter, Box, Histogram, Heatmap.
+Supported chart types: Bar, Line, Scatter, Box, Histogram, Heatmap, Choropleth Map.
 Never raises — catches all plotly errors and returns an annotated figure.
 """
 
@@ -32,6 +32,7 @@ def build_chart(
     bins: int = 30,
     filters: list[Filter] | None = None,
     sample_limit: int = 50_000,
+    location_mode: str = "country names",
 ) -> go.Figure:
     """
     Build a Plotly figure for the given chart configuration.
@@ -39,15 +40,17 @@ def build_chart(
     Args:
         table_name: Dataset table name.
         engine: SQLAlchemy engine.
-        chart_type: One of "Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap".
-        x_col: X-axis column.
-        y_col: Y-axis column (None for Histogram).
+        chart_type: One of "Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap",
+                    "Choropleth Map".
+        x_col: X-axis / location column.
+        y_col: Y-axis / value column (None for Histogram).
         color_col: Optional color / group-by column.
         facet_col: Optional facet column.
-        agg_func: Aggregation function for Bar / Line / Heatmap.
+        agg_func: Aggregation function for Bar / Line / Heatmap / Choropleth.
         bins: Bin count for Histogram.
         filters: Optional filter list.
         sample_limit: Max rows to load (avoids OOM on huge datasets).
+        location_mode: Plotly locationmode for Choropleth ("country names" or "ISO-3").
 
     Returns:
         A Plotly Figure. On error, returns a figure with an annotation.
@@ -64,7 +67,8 @@ def build_chart(
         if df.empty:
             return _error_fig("No data matched the current filters.")
 
-        return _dispatch(df, chart_type, x_col, y_col, color_col, facet_col, agg_func, bins)
+        return _dispatch(df, chart_type, x_col, y_col, color_col, facet_col,
+                         agg_func, bins, location_mode)
 
     except Exception as exc:
         logger.exception("build_chart failed")
@@ -80,6 +84,7 @@ def _dispatch(
     facet_col: str | None,
     agg_func: str,
     bins: int,
+    location_mode: str = "country names",
 ) -> go.Figure:
     """Dispatch to the correct chart builder."""
     ct = chart_type.lower()
@@ -94,6 +99,8 @@ def _dispatch(
         return _heatmap(df, x_col, y_col or x_col, agg_func)
     if ct in ("bar", "line"):
         return _bar_or_line(df, x_col, y_col, color_col, facet_col, agg_func, ct)
+    if ct == "choropleth map":
+        return _choropleth(df, x_col, y_col or x_col, agg_func, location_mode)
 
     return _error_fig(f"Unknown chart type: {chart_type!r}")
 
@@ -219,6 +226,66 @@ def _heatmap(df: pd.DataFrame, x_col: str, y_col: str, agg_func: str) -> go.Figu
         title=f"Heatmap: {y_col} × {x_col}",
         color_continuous_scale="Blues",
         aspect="auto",
+    )
+    return fig
+
+
+def _auto_location_mode(series: pd.Series) -> str:
+    """Guess whether values are ISO-3 codes or country names."""
+    sample = series.dropna().astype(str).head(50)
+    if sample.empty:
+        return "country names"
+    avg_len = sample.str.len().mean()
+    pct_upper = sample.str.isupper().mean()
+    if avg_len <= 3.5 and pct_upper >= 0.7:
+        return "ISO-3"
+    return "country names"
+
+
+def _choropleth(
+    df: pd.DataFrame,
+    location_col: str,
+    value_col: str,
+    agg_func: str,
+    location_mode: str,
+) -> go.Figure:
+    if location_col not in df.columns:
+        return _error_fig(f"Location column '{location_col}' not found.")
+    if value_col not in df.columns:
+        return _error_fig(f"Value column '{value_col}' not found.")
+
+    # Auto-detect location mode if not explicitly overridden
+    if location_mode == "auto":
+        location_mode = _auto_location_mode(df[location_col])
+
+    # Aggregate per location
+    fn_map = {"mean": "mean", "sum": "sum", "count": "count",
+               "min": "min", "max": "max", "median": "median"}
+    fn = fn_map.get(agg_func, "mean")
+    if fn == "count":
+        agg_df = df.groupby(location_col).size().reset_index(name=value_col)
+    else:
+        agg_df = df.groupby(location_col)[value_col].agg(fn).reset_index()
+    agg_df = agg_df.dropna(subset=[value_col])
+
+    if agg_df.empty:
+        return _error_fig("No data after aggregation.")
+
+    plotly_mode = "ISO-3" if location_mode == "ISO-3" else "country names"
+
+    fig = px.choropleth(
+        agg_df,
+        locations=location_col,
+        color=value_col,
+        locationmode=plotly_mode,
+        color_continuous_scale="Viridis",
+        title=f"Choropleth: {agg_func}({value_col}) by {location_col}",
+        projection="natural earth",
+    )
+    fig.update_layout(
+        coloraxis_colorbar={"title": f"{agg_func}({value_col})"},
+        margin={"r": 0, "l": 0, "t": 40, "b": 0},
+        height=500,
     )
     return fig
 
