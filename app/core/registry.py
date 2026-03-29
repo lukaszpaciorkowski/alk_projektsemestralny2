@@ -238,6 +238,8 @@ REGISTRY: dict[str, AnalyticsFunction] = {
         params=[
             ParamSpec("n_components", "int", default=2, label="Number of components"),
             ParamSpec("scale", "bool", default=True, label="Standardize features"),
+            ParamSpec("x_component", "int", default=1, label="X axis component"),
+            ParamSpec("y_component", "int", default=2, label="Y axis component"),
         ],
         fn=run_pca,
         has_chart=True,

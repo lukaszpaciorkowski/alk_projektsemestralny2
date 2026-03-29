@@ -338,9 +338,11 @@ def run_pca(
     meta: list[dict],
     n_components: int = 2,
     scale: bool = True,
+    x_component: int = 1,
+    y_component: int = 2,
     **params: Any,
 ) -> tuple[pd.DataFrame, go.Figure | None]:
-    """PCA on numeric columns. Returns variance summary + 2-D scatter."""
+    """PCA on numeric columns. Returns variance summary + biplot scatter."""
     try:
         from sklearn.decomposition import PCA
         from sklearn.preprocessing import StandardScaler
@@ -357,14 +359,20 @@ def run_pca(
 
     n_components = min(n_components, num_df.shape[1], num_df.shape[0])
 
+    # Clamp component indices to valid range
+    xi = max(1, min(int(x_component), n_components)) - 1  # 0-based
+    yi = max(1, min(int(y_component), n_components)) - 1
+    if xi == yi:
+        yi = (xi + 1) % n_components  # ensure different axes
+
     X = num_df.values
     if scale:
         X = StandardScaler().fit_transform(X)
 
     pca = PCA(n_components=n_components)
-    components = pca.fit_transform(X)
+    scores = pca.fit_transform(X)  # shape: (n_samples, n_components)
 
-    # Variance summary table
+    # Variance summary table (all components)
     cumulative = 0.0
     summary_rows = []
     for i, (var, ratio) in enumerate(
@@ -381,10 +389,18 @@ def run_pca(
         )
     result_df = pd.DataFrame(summary_rows)
 
-    # 2-D scatter (PC1 vs PC2)
+    # Biplot: scores scatter + loading arrows
     fig = None
     if n_components >= 2:
-        scatter_df = pd.DataFrame(components[:, :2], columns=["PC1", "PC2"])
+        pc_x_label = f"PC{xi + 1}"
+        pc_y_label = f"PC{yi + 1}"
+        x_var = pca.explained_variance_ratio_[xi] * 100
+        y_var = pca.explained_variance_ratio_[yi] * 100
+        total_var = x_var + y_var
+
+        scatter_df = pd.DataFrame(
+            {pc_x_label: scores[:, xi], pc_y_label: scores[:, yi]}
+        )
 
         # Colour by first categorical column of the original frame if available
         cat_cols = _categorical_cols(df.loc[num_df.index])
@@ -392,23 +408,75 @@ def run_pca(
         if color_col:
             scatter_df[color_col] = df.loc[num_df.index, color_col].values
 
-        total_var = (
-            pca.explained_variance_ratio_[0] + pca.explained_variance_ratio_[1]
-        ) * 100
-
         fig = px.scatter(
             scatter_df,
-            x="PC1",
-            y="PC2",
+            x=pc_x_label,
+            y=pc_y_label,
             color=color_col,
-            opacity=0.6,
-            title=f"PCA — PC1 vs PC2 ({total_var:.1f}% variance explained)",
+            opacity=0.5,
+            title=f"PCA Biplot — {pc_x_label} vs {pc_y_label} ({total_var:.1f}% variance explained)",
             labels={
-                "PC1": f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)",
-                "PC2": f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)",
+                pc_x_label: f"{pc_x_label} ({x_var:.1f}%)",
+                pc_y_label: f"{pc_y_label} ({y_var:.1f}%)",
             },
+            color_discrete_sequence=px.colors.qualitative.Set2,
         )
-        fig.update_traces(marker_size=4)
+        fig.update_traces(marker_size=4, selector=dict(mode="markers"))
+
+        # Loading arrows (biplot)
+        loadings_x = pca.components_[xi]  # shape: (n_features,)
+        loadings_y = pca.components_[yi]
+
+        # Scale arrows to fit nicely in score space
+        score_scale = max(
+            float(np.abs(scores[:, xi]).max()),
+            float(np.abs(scores[:, yi]).max()),
+        ) if len(scores) > 0 else 1.0
+        loading_scale = max(
+            float(np.abs(loadings_x).max()),
+            float(np.abs(loadings_y).max()),
+        ) if len(loadings_x) > 0 else 1.0
+        arrow_scale = score_scale / loading_scale * 0.7  # 0.7 keeps arrows inside cloud
+
+        feature_names = list(num_df.columns)
+        for feat, lx, ly in zip(feature_names, loadings_x, loadings_y):
+            tip_x = float(lx) * arrow_scale
+            tip_y = float(ly) * arrow_scale
+            # Arrow line
+            fig.add_trace(
+                go.Scatter(
+                    x=[0, tip_x],
+                    y=[0, tip_y],
+                    mode="lines",
+                    line=dict(color="rgba(220,50,50,0.7)", width=1.5),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+            # Arrow tip label
+            fig.add_trace(
+                go.Scatter(
+                    x=[tip_x],
+                    y=[tip_y],
+                    mode="text",
+                    text=[feat],
+                    textposition="top center",
+                    textfont=dict(size=9, color="rgba(180,0,0,0.9)"),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+        # Origin marker
+        fig.add_trace(
+            go.Scatter(
+                x=[0], y=[0],
+                mode="markers",
+                marker=dict(symbol="cross", size=8, color="black"),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
 
     return result_df, fig
 
