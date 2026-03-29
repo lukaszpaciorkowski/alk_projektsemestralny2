@@ -161,6 +161,62 @@ def _generate_html_report(
 </html>"""
 
 
+_UNICODE_FONT_CANDIDATES: list[tuple[str, str, str]] = [
+    # (regular, bold, italic) — tried in order; first complete set wins
+    (
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Italic.ttf",
+    ),
+    (
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Italic.ttf",
+    ),
+    (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+    ),
+    (
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+    ),
+]
+
+_CHAR_REPLACEMENTS: dict[str, str] = {
+    "≥": ">=", "≤": "<=", "≠": "!=", "∈": "in", "∉": "not in",
+    "—": "-", "–": "-", "\u2019": "'", "\u2018": "'",
+    "\u201c": '"', "\u201d": '"', "…": "...",
+}
+
+
+def _sanitize_for_pdf(text: str) -> str:
+    """Replace non-latin-1 characters with ASCII equivalents for Helvetica fallback."""
+    for src, dst in _CHAR_REPLACEMENTS.items():
+        text = text.replace(src, dst)
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _load_unicode_font(pdf) -> str:
+    """
+    Try to register a Unicode-capable font with fpdf2.
+    Returns the registered font name, or empty string if none succeeded.
+    """
+    from pathlib import Path as _Path
+    for regular, bold, italic in _UNICODE_FONT_CANDIDATES:
+        if _Path(regular).exists() and _Path(bold).exists() and _Path(italic).exists():
+            try:
+                pdf.add_font("UniFont", "",  regular)
+                pdf.add_font("UniFont", "B", bold)
+                pdf.add_font("UniFont", "I", italic)
+                return "UniFont"
+            except Exception:
+                continue
+    return ""
+
+
 def _generate_pdf_report(
     title: str,
     author: str,
@@ -174,27 +230,35 @@ def _generate_pdf_report(
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
+    # Try Unicode font first; fall back to Helvetica + sanitisation
+    unicode_font = _load_unicode_font(pdf)
+    base_font = unicode_font if unicode_font else "Helvetica"
+
+    def _t(text: str) -> str:
+        """Sanitise text only when the fallback font is in use."""
+        return text if unicode_font else _sanitize_for_pdf(text)
+
     # Title
-    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_font(base_font, "B", 18)
     pdf.set_text_color(26, 82, 118)
-    pdf.cell(0, 12, title, align="C")
+    pdf.cell(0, 12, _t(title), align="C")
     pdf.ln(8)
-    pdf.set_font("Helvetica", "", 11)
+    pdf.set_font(base_font, "", 11)
     pdf.set_text_color(80, 80, 80)
-    pdf.cell(0, 8, f"Author: {author}", align="C")
+    pdf.cell(0, 8, _t(f"Author: {author}"), align="C")
     pdf.ln(12)
 
     def h2(text: str) -> None:
-        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_font(base_font, "B", 13)
         pdf.set_text_color(31, 97, 141)
-        pdf.cell(0, 8, text)
+        pdf.cell(0, 8, _t(text))
         pdf.ln(5)
         pdf.set_text_color(50, 50, 50)
 
     def body(text: str) -> None:
-        pdf.set_font("Helvetica", "", 10)
+        pdf.set_font(base_font, "", 10)
         pdf.set_text_color(50, 50, 50)
-        pdf.multi_cell(0, 5, text)
+        pdf.multi_cell(0, 5, _t(text))
         pdf.ln(3)
 
     if sections.get("goal"):
@@ -222,17 +286,17 @@ def _generate_pdf_report(
     for item in items:
         fig_bytes = _fig_to_png_bytes(item["fig"])
         # Figure title
-        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_font(base_font, "B", 10)
         pdf.set_text_color(46, 134, 193)
-        pdf.cell(0, 7, item["title"])
+        pdf.cell(0, 7, _t(item["title"]))
         pdf.ln(3)
         # Filter context lines (italic, small, grey)
         ctx_lines = _filter_context_lines(item)
         if ctx_lines:
-            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_font(base_font, "I", 8)
             pdf.set_text_color(120, 120, 120)
             for line in ctx_lines:
-                pdf.cell(0, 4, line)
+                pdf.cell(0, 4, _t(line))
                 pdf.ln(4)
             pdf.ln(1)
         if fig_bytes:
@@ -244,9 +308,9 @@ def _generate_pdf_report(
             pdf.ln(6)
             os.unlink(tmp_path)
         else:
-            pdf.set_font("Helvetica", "I", 9)
+            pdf.set_font(base_font, "I", 9)
             pdf.set_text_color(150, 150, 150)
-            pdf.cell(0, 6, f"{item['title']} - image could not be rendered.")
+            pdf.cell(0, 6, _t(f"{item['title']} - image could not be rendered."))
             pdf.ln(4)
 
     return bytes(pdf.output())
