@@ -1,6 +1,6 @@
 {
   "pipeline": {
-    "null_threshold": 0.3,
+    "null_threshold": 0.84,
     "outlier_zscore": 3.0,
     "age_bins": [0, 30, 50, 70, 100],
     "age_labels": ["0-30", "30-50", "50-70", "70+"],

@@ -199,6 +199,73 @@ def unpivot_medications(df: pd.DataFrame, engine) -> None:
     logger.info("Loaded %d medication rows (long format).", len(melt_df))
 
 
+def _icd9_category(code: str) -> str:
+    """Return a broad ICD-9 category description for a code string."""
+    c = code.strip().upper()
+    if c.startswith("E"):
+        return "External causes of injury"
+    if c.startswith("V"):
+        return "Supplementary classification"
+    try:
+        n = float(c)
+    except ValueError:
+        return "Other / unclassified"
+    if n < 140:
+        return "Infectious and parasitic diseases"
+    if n < 240:
+        return "Neoplasms"
+    if n < 280:
+        return "Endocrine, nutritional, metabolic, immunity"
+    if n < 290:
+        return "Diseases of blood"
+    if n < 320:
+        return "Mental disorders"
+    if n < 390:
+        return "Nervous system and sense organs"
+    if n < 460:
+        return "Circulatory system"
+    if n < 520:
+        return "Respiratory system"
+    if n < 580:
+        return "Digestive system"
+    if n < 630:
+        return "Genitourinary system"
+    if n < 680:
+        return "Complications of pregnancy / childbirth"
+    if n < 710:
+        return "Skin and subcutaneous tissue"
+    if n < 740:
+        return "Musculoskeletal and connective tissue"
+    if n < 760:
+        return "Congenital anomalies"
+    if n < 780:
+        return "Perinatal conditions"
+    if n < 800:
+        return "Symptoms, signs, ill-defined conditions"
+    return "Injury and poisoning"
+
+
+def load_diagnoses_lookup(df: pd.DataFrame, engine) -> None:
+    """Populate diagnoses_lookup with all unique ICD-9 codes found in the data."""
+    diag_cols = [c for c in ["diag_1", "diag_2", "diag_3"] if c in df.columns]
+    codes = (
+        pd.concat([df[c] for c in diag_cols])
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+    )
+    lookup = pd.DataFrame({
+        "icd9_code": codes,
+        "description": [f"ICD-9 {c}" for c in codes],
+        "category": [_icd9_category(c) for c in codes],
+    })
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnoses_lookup"))
+    lookup.to_sql("diagnoses_lookup", engine, if_exists="append", index=False)
+    logger.info("Loaded %d ICD-9 codes into diagnoses_lookup.", len(lookup))
+
+
 def load_diagnosis_encounters(df: pd.DataFrame, engine) -> None:
     """Parse diag_1, diag_2, diag_3 and load into diagnosis_encounters."""
     diag_cols = ["diag_1", "diag_2", "diag_3"]
@@ -261,6 +328,7 @@ def main() -> None:
     load_patients(df, engine)
     load_admissions(df, engine)
     unpivot_medications(df, engine)
+    load_diagnoses_lookup(df, engine)
     load_diagnosis_encounters(df, engine)
 
     logger.info("All data loaded successfully.")
