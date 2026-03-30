@@ -570,10 +570,28 @@ def _bubble(
     if hover_col and hover_col in df.columns:
         kwargs["hover_name"] = hover_col
     if animation_col and animation_col in df.columns:
-        # Sort by animation column so frames appear in order
-        plot_df = plot_df.sort_values(animation_col)
+        # Determine entity column for stable ordering across frames
+        entity_col = hover_col or color_col or x_col
+
+        # Build a complete entity × frame grid so every entity appears in
+        # every frame — Plotly matches points by row index, so gaps cause jumps.
+        from itertools import product as _product
+        all_entities = plot_df[entity_col].unique()
+        all_frames = sorted(plot_df[animation_col].unique())
+        full_index = pd.DataFrame(
+            list(_product(all_entities, all_frames)),
+            columns=[entity_col, animation_col],
+        )
+        # Merge preserving all extra columns; missing values stay NaN
+        merge_cols = list({entity_col, animation_col})
+        plot_df = full_index.merge(plot_df, on=merge_cols, how="left")
+
+        # Sort consistently: frame first, then entity — same row order every frame
+        plot_df = plot_df.sort_values([animation_col, entity_col]).reset_index(drop=True)
+
         kwargs["data_frame"] = plot_df
         kwargs["animation_frame"] = animation_col
+
         # Fix axis ranges so they don't jump between frames
         x_vals = pd.to_numeric(plot_df[x_col], errors="coerce").dropna()
         y_vals = pd.to_numeric(plot_df[y_col], errors="coerce").dropna()
@@ -591,6 +609,34 @@ def _bubble(
     kwargs["title"] = " — ".join(title_parts)
 
     fig = px.scatter(**kwargs)
+
+    if animation_col and animation_col in df.columns:
+        fig.update_layout(
+            updatemenus=[{
+                "type": "buttons",
+                "showactive": False,
+                "y": 1.15,
+                "x": 0.5,
+                "xanchor": "center",
+                "buttons": [
+                    {
+                        "label": "▶ Play",
+                        "method": "animate",
+                        "args": [None, {
+                            "frame": {"duration": 500, "redraw": True},
+                            "transition": {"duration": 300, "easing": "cubic-in-out"},
+                            "fromcurrent": True,
+                        }],
+                    },
+                    {
+                        "label": "⏸ Pause",
+                        "method": "animate",
+                        "args": [[None], {"frame": {"duration": 0}, "mode": "immediate"}],
+                    },
+                ],
+            }]
+        )
+
     return fig
 
 
@@ -622,7 +668,20 @@ def _animated_bar(
     else:
         plot_df = df.groupby(group_cols)[y_col].agg(fn).reset_index()
 
-    plot_df = plot_df.sort_values(animation_col)
+    # Ensure every entity appears in every frame for stable row-index matching
+    from itertools import product as _product
+    entity_col = color_col if color_col and color_col in df.columns else x_col
+    all_entities = plot_df[entity_col].unique()
+    all_frames = sorted(plot_df[animation_col].unique())
+    full_index = pd.DataFrame(
+        list(_product(all_entities, all_frames)),
+        columns=[entity_col, animation_col],
+    )
+    merge_cols = list({entity_col, animation_col})
+    plot_df = full_index.merge(plot_df, on=merge_cols, how="left")
+
+    # Sort: frame first, then entity — same row order every frame
+    plot_df = plot_df.sort_values([animation_col, entity_col]).reset_index(drop=True)
 
     y_max = pd.to_numeric(plot_df[y_col], errors="coerce").max()
     y_range = [0, y_max * 1.1 if y_max and y_max > 0 else 1]
