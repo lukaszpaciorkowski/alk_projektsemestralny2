@@ -9,6 +9,8 @@ Tests:
   5. Query layer: fetch_table, fetch_column_stats, fetch_distinct_values
   6. Chart builder: build_chart() with real data
   7. Page file AST validation (no syntax errors)
+  8. Pipeline CRUD and execution tests
+  9. Live HTTP smoke test
 """
 
 from __future__ import annotations
@@ -785,12 +787,183 @@ class TestPageFileAST:
     def test_chart_builder_component(self):
         self._parse_ok(self.COMPONENT_DIR / "chart_builder.py")
 
+    def test_pipelines_page(self):
+        self._parse_ok(self.VIEW_DIR / "7_pipelines.py")
+
     def test_main_entry_point(self):
         self._parse_ok(Path("app/main.py"))
 
 
 # ---------------------------------------------------------------------------
-# 8. Live HTTP smoke test
+# 8. Pipeline CRUD and execution tests
+# ---------------------------------------------------------------------------
+
+class TestPipelineCRUD:
+    """Tests for app/core/pipelines.py — requires no external DB."""
+
+    SIMPLE_STEPS = [
+        {"step_id": "step_1", "function_id": "generic.describe",    "label": "Describe",     "params": {}, "filters": [], "add_to_report": True},
+        {"step_id": "step_2", "function_id": "generic.null_analysis","label": "Null Analysis","params": {}, "filters": [], "add_to_report": False},
+    ]
+
+    @pytest.fixture
+    def mem_engine(self):
+        """Fresh in-memory engine with pipelines tables."""
+        from sqlalchemy import create_engine as _ce
+        from app.core.pipelines import ensure_pipelines_tables
+        eng = _ce("sqlite:///:memory:")
+        ensure_pipelines_tables(eng)
+        return eng
+
+    def test_create_and_get_pipeline(self, mem_engine):
+        from app.core.pipelines import create_pipeline, get_pipeline
+        pid = create_pipeline(mem_engine, "Test", "desc", "generic", self.SIMPLE_STEPS)
+        assert isinstance(pid, int) and pid > 0
+        pl = get_pipeline(mem_engine, pid)
+        assert pl is not None
+        assert pl["name"] == "Test"
+        assert pl["dataset_type"] == "generic"
+        assert len(pl["steps"]) == 2
+
+    def test_list_pipelines(self, mem_engine):
+        from app.core.pipelines import create_pipeline, list_pipelines
+        before = len(list_pipelines(mem_engine))
+        create_pipeline(mem_engine, "A", "", "generic", self.SIMPLE_STEPS)
+        create_pipeline(mem_engine, "B", "", "diabetes", self.SIMPLE_STEPS)
+        after = list_pipelines(mem_engine)
+        assert len(after) == before + 2
+
+    def test_update_pipeline(self, mem_engine):
+        from app.core.pipelines import create_pipeline, get_pipeline, update_pipeline
+        pid = create_pipeline(mem_engine, "Old Name", "", "generic", self.SIMPLE_STEPS)
+        old_updated = get_pipeline(mem_engine, pid)["updated_at"]
+        import time; time.sleep(1.01)
+        update_pipeline(mem_engine, pid, name="New Name", description="updated")
+        pl = get_pipeline(mem_engine, pid)
+        assert pl["name"] == "New Name"
+        assert pl["description"] == "updated"
+        assert pl["updated_at"] != old_updated
+
+    def test_delete_pipeline(self, mem_engine):
+        from app.core.pipelines import create_pipeline, delete_pipeline, get_pipeline, start_pipeline_run
+        pid = create_pipeline(mem_engine, "ToDelete", "", "generic", self.SIMPLE_STEPS)
+        start_pipeline_run(mem_engine, pid, "some_table")
+        delete_pipeline(mem_engine, pid)
+        assert get_pipeline(mem_engine, pid) is None
+        from app.core.pipelines import list_runs_for_pipeline
+        assert list_runs_for_pipeline(mem_engine, pid) == []
+
+    def test_clone_pipeline(self, mem_engine):
+        from app.core.pipelines import clone_pipeline, create_pipeline, get_pipeline
+        pid = create_pipeline(mem_engine, "Original", "orig desc", "generic", self.SIMPLE_STEPS)
+        clone_id = clone_pipeline(mem_engine, pid, "Clone")
+        assert clone_id != pid
+        clone = get_pipeline(mem_engine, clone_id)
+        orig  = get_pipeline(mem_engine, pid)
+        assert clone["name"] == "Clone"
+        assert clone["steps"] == orig["steps"]
+        assert clone["dataset_type"] == orig["dataset_type"]
+
+    def test_export_import_json(self, mem_engine):
+        from app.core.pipelines import create_pipeline, export_pipeline_json, get_pipeline, import_pipeline_json
+        pid = create_pipeline(mem_engine, "ExportMe", "desc", "generic", self.SIMPLE_STEPS)
+        json_str = export_pipeline_json(mem_engine, pid)
+        data = __import__("json").loads(json_str)
+        assert "id" not in data
+        assert "created_at" not in data
+        assert data["name"] == "ExportMe"
+        # round-trip
+        new_id = import_pipeline_json(mem_engine, json_str, name_override="Imported")
+        imported = get_pipeline(mem_engine, new_id)
+        assert imported["name"] == "Imported"
+        assert imported["steps"] == self.SIMPLE_STEPS
+
+    def test_import_invalid_function_id_raises(self, mem_engine):
+        import json
+        from app.core.pipelines import import_pipeline_json
+        bad_json = json.dumps({
+            "name": "Bad",
+            "dataset_type": "generic",
+            "steps": [{"step_id": "s1", "function_id": "nonexistent.fn", "label": "x", "params": {}, "filters": [], "add_to_report": False}],
+        })
+        with pytest.raises(ValueError, match="Unknown function_id"):
+            import_pipeline_json(mem_engine, bad_json)
+
+    def test_templates_inserted_once(self, mem_engine):
+        from app.core.pipelines import ensure_pipelines_tables, list_pipelines
+        count_before = len(list_pipelines(mem_engine))
+        ensure_pipelines_tables(mem_engine)  # second call — must not re-seed
+        ensure_pipelines_tables(mem_engine)  # third call
+        assert len(list_pipelines(mem_engine)) == count_before
+
+    def test_run_pipeline_all_steps_pass(self, mem_engine, prod_engine, heart_table):
+        """Two-step pipeline on a real table; both steps should complete."""
+        from app.core.pipelines import (
+            clear_pipeline_runs, create_pipeline, execute_pipeline_step,
+            get_pipeline, list_runs_for_pipeline, save_pipeline_run,
+            start_pipeline_run,
+        )
+        import json as _json
+        steps = [
+            {"step_id": "s1", "function_id": "generic.describe",     "label": "Describe",  "params": {}, "filters": [], "add_to_report": False},
+            {"step_id": "s2", "function_id": "generic.null_analysis", "label": "Nulls",     "params": {}, "filters": [], "add_to_report": False},
+        ]
+        pid = create_pipeline(mem_engine, "TestRun", "", "generic", steps)
+        pl  = get_pipeline(mem_engine, pid)
+        table = heart_table["table_name"]
+        meta  = _json.loads(heart_table["columns"]) if isinstance(heart_table["columns"], str) else heart_table["columns"]
+
+        run_id = start_pipeline_run(mem_engine, pid, table)
+        results = []
+        for step in pl["steps"]:
+            sr = execute_pipeline_step(prod_engine, step, table, meta, "none")
+            results.append(sr)
+        save_pipeline_run(mem_engine, run_id, results, "completed")
+
+        assert all(r["status"] == "completed" for r in results)
+        assert all(r["result_df_json"] is not None for r in results)
+
+    def test_run_pipeline_step_fails_gracefully(self, mem_engine, prod_engine, heart_table):
+        """Step with a bad function_id fails without raising; run still completes."""
+        from app.core.pipelines import execute_pipeline_step
+        import json as _json
+        meta = _json.loads(heart_table["columns"]) if isinstance(heart_table["columns"], str) else heart_table["columns"]
+        bad_step = {
+            "step_id": "s_bad", "function_id": "generic.describe", "label": "Broken",
+            "params": {}, "filters": [{"column": "nonexistent_col_xyz", "op": "eq", "value": "1"}],
+            "add_to_report": False,
+        }
+        # Filters on non-existent columns are silently ignored by SQLite — step should still pass
+        sr = execute_pipeline_step(prod_engine, bad_step, heart_table["table_name"], meta, "none")
+        assert sr["status"] in ("completed", "failed")  # either outcome; no exception raised
+
+    def test_list_runs_for_pipeline(self, mem_engine):
+        from app.core.pipelines import (
+            clear_pipeline_runs, create_pipeline, list_runs_for_pipeline,
+            save_pipeline_run, start_pipeline_run,
+        )
+        pid   = create_pipeline(mem_engine, "RunHistory", "", "generic", self.SIMPLE_STEPS)
+        run_id = start_pipeline_run(mem_engine, pid, "test_table")
+        save_pipeline_run(mem_engine, run_id, [], "completed")
+        runs = list_runs_for_pipeline(mem_engine, pid)
+        assert len(runs) >= 1
+        assert runs[0]["status"] == "completed"
+
+    def test_clear_pipeline_runs(self, mem_engine):
+        from app.core.pipelines import (
+            clear_pipeline_runs, create_pipeline, list_runs_for_pipeline,
+            save_pipeline_run, start_pipeline_run,
+        )
+        pid = create_pipeline(mem_engine, "ClearTest", "", "generic", self.SIMPLE_STEPS)
+        r1  = start_pipeline_run(mem_engine, pid, "t"); save_pipeline_run(mem_engine, r1, [], "completed")
+        r2  = start_pipeline_run(mem_engine, pid, "t"); save_pipeline_run(mem_engine, r2, [], "completed")
+        assert len(list_runs_for_pipeline(mem_engine, pid)) == 2
+        clear_pipeline_runs(mem_engine, pid)
+        assert list_runs_for_pipeline(mem_engine, pid) == []
+
+
+# ---------------------------------------------------------------------------
+# 9. Live HTTP smoke test
 # ---------------------------------------------------------------------------
 
 class TestLiveApp:

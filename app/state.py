@@ -56,6 +56,11 @@ def init_state(con=None) -> None:
     if con is not None:
         # Store engine so report helpers can reach it without extra args
         st.session_state["_db_engine"] = con
+        try:
+            from app.core.pipelines import ensure_pipelines_tables
+            ensure_pipelines_tables(con)
+        except Exception:
+            pass
 
     # Re-hydrate active dataset from DB if it was lost on refresh
     if con is not None and st.session_state.get("active_dataset") is None:
