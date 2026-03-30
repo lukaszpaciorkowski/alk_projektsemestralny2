@@ -488,41 +488,93 @@ def run_pca(
 def run_outlier_detection(
     df: pd.DataFrame,
     meta: list[dict],
-    column: str = "",
+    x_column: str = "",
+    y_column: str = "",
     method: str = "zscore",
     threshold: int = 3,
     **params: Any,
 ) -> tuple[pd.DataFrame, go.Figure | None]:
-    """Flag outliers in a numeric column using Z-score or IQR method."""
-    from scipy import stats as scipy_stats
+    """
+    Outlier detection with two modes:
 
+    Single-variable (y_column empty or same as x_column):
+        Histogram with outlier region shaded + strip/jitter plot with
+        outliers marked as red ✕ points.
+
+    Two-variable scatter (y_column differs from x_column):
+        Scatter plot coloured blue (normal) / red ✕ (outlier).
+        Threshold boundary lines drawn for zscore/iqr methods.
+        Isolation Forest supported as a third method.
+    """
     num_cols = _numeric_cols(df)
     if not num_cols:
         return pd.DataFrame({"error": ["No numeric columns found."]}), None
-    if not column or column not in df.columns:
-        column = num_cols[0]
 
+    # Resolve x_column
+    if not x_column or x_column not in df.columns:
+        x_column = num_cols[0]
+
+    # Determine mode
+    two_var = bool(y_column and y_column in df.columns and y_column != x_column)
+
+    if two_var:
+        return _outlier_two_var(df, x_column, y_column, method, threshold)
+    else:
+        return _outlier_single_var(df, x_column, method, threshold)
+
+
+def _outlier_flag_1d(series: pd.Series, method: str, threshold: int) -> tuple[pd.Series, dict]:
+    """Return boolean outlier mask and boundary info for one series."""
+    from scipy import stats as scipy_stats
+
+    info: dict = {}
+    if method == "zscore":
+        z = np.abs(scipy_stats.zscore(series, nan_policy="omit"))
+        mask = pd.Series(z > threshold, index=series.index)
+        info["lo"] = float(series.mean() - threshold * series.std())
+        info["hi"] = float(series.mean() + threshold * series.std())
+    elif method == "iqr":
+        q1, q3 = float(series.quantile(0.25)), float(series.quantile(0.75))
+        iqr = q3 - q1
+        info["lo"] = q1 - threshold * iqr
+        info["hi"] = q3 + threshold * iqr
+        mask = (series < info["lo"]) | (series > info["hi"])
+    else:
+        # isolation_forest — treat as no-boundary method, mask all False here
+        mask = pd.Series(False, index=series.index)
+    return mask, info
+
+
+def _outlier_single_var(
+    df: pd.DataFrame,
+    column: str,
+    method: str,
+    threshold: int,
+) -> tuple[pd.DataFrame, go.Figure | None]:
     series = df[column].dropna()
     if len(series) < 4:
-        return pd.DataFrame({"error": ["Too few non-null values for outlier detection."]}), None
+        return pd.DataFrame({"error": ["Too few non-null values."]}), None
 
-    if method == "zscore":
-        z = np.abs(scipy_stats.zscore(series))
-        mask = z > threshold
+    if method == "isolation_forest":
+        try:
+            from sklearn.ensemble import IsolationForest
+        except ImportError:
+            return pd.DataFrame({"error": ["scikit-learn required for Isolation Forest."]}), None
+        contamination = max(0.01, min(0.5, 0.05 * (4 / max(threshold, 1))))
+        clf = IsolationForest(contamination=contamination, random_state=42)
+        preds = clf.fit_predict(series.values.reshape(-1, 1))
+        mask = pd.Series(preds == -1, index=series.index)
+        bounds: dict = {}
     else:
-        q1, q3 = series.quantile(0.25), series.quantile(0.75)
-        iqr = q3 - q1
-        fence_lo = q1 - threshold * iqr
-        fence_hi = q3 + threshold * iqr
-        mask = (series < fence_lo) | (series > fence_hi)
+        mask, bounds = _outlier_flag_1d(series, method, threshold)
 
-    outlier_vals = series[mask]
+    n_out = int(mask.sum())
     result_df = pd.DataFrame([{
         "column": column,
         "method": method,
         "threshold": threshold,
         "total_values": len(series),
-        "outlier_count": int(mask.sum()),
+        "outlier_count": n_out,
         "outlier_pct": round(mask.mean() * 100, 2),
         "min": round(float(series.min()), 4),
         "max": round(float(series.max()), 4),
@@ -530,22 +582,195 @@ def run_outlier_detection(
         "std": round(float(series.std()), 4),
     }])
 
-    plot_df = df[[column]].copy().dropna()
-    plot_df["_outlier"] = mask.reindex(plot_df.index, fill_value=False)
-    fig = px.box(
-        series.reset_index(drop=True),
-        points="all",
+    # ── Chart: histogram + shaded outlier regions ─────────────────────────────
+    normal = series[~mask]
+    outliers = series[mask]
+
+    fig = go.Figure()
+
+    # Normal histogram (blue)
+    fig.add_trace(go.Histogram(
+        x=normal,
+        name="Normal",
+        marker_color="steelblue",
+        opacity=0.75,
+        nbinsx=40,
+    ))
+    # Outlier histogram (red)
+    if not outliers.empty:
+        fig.add_trace(go.Histogram(
+            x=outliers,
+            name=f"Outliers ({n_out})",
+            marker_color="crimson",
+            opacity=0.85,
+            nbinsx=40,
+        ))
+
+    # Threshold boundary lines
+    if bounds.get("lo") is not None:
+        for xval, label in [(bounds["lo"], "lower bound"), (bounds["hi"], "upper bound")]:
+            fig.add_vline(
+                x=xval,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=label,
+                annotation_position="top right",
+            )
+
+    fig.update_layout(
+        barmode="overlay",
         title=f"Outlier Detection — {column} ({method}, threshold={threshold})",
-        labels={"value": column},
+        xaxis_title=column,
+        yaxis_title="Count",
+        legend_title="",
+        height=420,
     )
-    if not outlier_vals.empty:
-        fig.add_scatter(
-            x=[0] * len(outlier_vals),
-            y=outlier_vals.values,
+
+    # ── Second trace: strip / jitter plot ─────────────────────────────────────
+    jitter_fig = go.Figure()
+    jitter_fig.add_trace(go.Box(
+        y=normal,
+        name="Normal",
+        marker_color="steelblue",
+        boxpoints="all",
+        jitter=0.4,
+        pointpos=0,
+        marker_size=3,
+    ))
+    if not outliers.empty:
+        jitter_fig.add_trace(go.Scatter(
+            y=outliers,
+            x=["Normal"] * len(outliers),
             mode="markers",
-            marker=dict(color="red", size=8, symbol="x"),
-            name=f"Outliers ({len(outlier_vals)})",
-        )
+            name=f"Outliers ({n_out})",
+            marker=dict(color="crimson", size=8, symbol="x"),
+        ))
+    jitter_fig.update_layout(
+        title=f"Strip Plot — {column}",
+        yaxis_title=column,
+        height=350,
+        showlegend=True,
+    )
+
+    # Combine both into subplots
+    from plotly.subplots import make_subplots
+    combined = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=[
+            f"Histogram ({method}, threshold={threshold})",
+            "Strip / Jitter Plot",
+        ],
+    )
+    for trace in fig.data:
+        combined.add_trace(trace, row=1, col=1)
+    for trace in jitter_fig.data:
+        combined.add_trace(trace, row=1, col=2)
+    if bounds.get("lo") is not None:
+        combined.add_vline(x=bounds["lo"], line_dash="dash", line_color="red", row=1, col=1)
+        combined.add_vline(x=bounds["hi"], line_dash="dash", line_color="red", row=1, col=1)
+    combined.update_layout(
+        title_text=f"Outlier Detection — {column} ({method}, threshold={threshold})",
+        height=450,
+        barmode="overlay",
+    )
+
+    return result_df, combined
+
+
+def _outlier_two_var(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    method: str,
+    threshold: int,
+) -> tuple[pd.DataFrame, go.Figure | None]:
+    plot_df = df[[x_col, y_col]].dropna().copy()
+    if len(plot_df) < 4:
+        return pd.DataFrame({"error": ["Too few rows with non-null values in both columns."]}), None
+
+    # Sample for performance
+    MAX_SCATTER = 20_000
+    if len(plot_df) > MAX_SCATTER:
+        plot_df = plot_df.sample(MAX_SCATTER, random_state=42)
+
+    if method == "isolation_forest":
+        try:
+            from sklearn.ensemble import IsolationForest
+        except ImportError:
+            return pd.DataFrame({"error": ["scikit-learn required for Isolation Forest."]}), None
+        contamination = max(0.01, min(0.5, 0.05 * (4 / max(threshold, 1))))
+        clf = IsolationForest(contamination=contamination, random_state=42)
+        preds = clf.fit_predict(plot_df[[x_col, y_col]].values)
+        plot_df["_outlier"] = preds == -1
+        x_bounds: dict = {}
+        y_bounds: dict = {}
+    else:
+        x_mask, x_bounds = _outlier_flag_1d(plot_df[x_col], method, threshold)
+        y_mask, y_bounds = _outlier_flag_1d(plot_df[y_col], method, threshold)
+        plot_df["_outlier"] = x_mask | y_mask
+
+    n_out = int(plot_df["_outlier"].sum())
+    n_total = len(plot_df)
+
+    result_df = pd.DataFrame([{
+        "x_column": x_col,
+        "y_column": y_col,
+        "method": method,
+        "threshold": threshold,
+        "total_points": n_total,
+        "outlier_count": n_out,
+        "outlier_pct": round(n_out / n_total * 100, 2),
+    }])
+
+    normal_df = plot_df[~plot_df["_outlier"]]
+    outlier_df = plot_df[plot_df["_outlier"]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=normal_df[x_col],
+        y=normal_df[y_col],
+        mode="markers",
+        name=f"Normal ({n_total - n_out:,})",
+        marker=dict(color="steelblue", size=4, opacity=0.6),
+    ))
+    if not outlier_df.empty:
+        fig.add_trace(go.Scatter(
+            x=outlier_df[x_col],
+            y=outlier_df[y_col],
+            mode="markers",
+            name=f"Outliers ({n_out:,})",
+            marker=dict(color="crimson", size=9, symbol="x", opacity=0.9),
+        ))
+
+    # Boundary lines for zscore / iqr
+    if method in ("zscore", "iqr"):
+        for xval, label in [
+            (x_bounds.get("lo"), f"{x_col} lower"),
+            (x_bounds.get("hi"), f"{x_col} upper"),
+        ]:
+            if xval is not None:
+                fig.add_vline(
+                    x=xval, line_dash="dash", line_color="salmon",
+                    annotation_text=label, annotation_position="top left",
+                )
+        for yval, label in [
+            (y_bounds.get("lo"), f"{y_col} lower"),
+            (y_bounds.get("hi"), f"{y_col} upper"),
+        ]:
+            if yval is not None:
+                fig.add_hline(
+                    y=yval, line_dash="dash", line_color="salmon",
+                    annotation_text=label, annotation_position="bottom right",
+                )
+
+    fig.update_layout(
+        title=f"Outlier Detection — {x_col} vs {y_col} ({method}, threshold={threshold})",
+        xaxis_title=x_col,
+        yaxis_title=y_col,
+        height=500,
+        legend_title="",
+    )
+
     return result_df, fig
 
 

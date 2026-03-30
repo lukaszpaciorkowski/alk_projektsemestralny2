@@ -251,11 +251,16 @@ REGISTRY: dict[str, AnalyticsFunction] = {
         id="generic.outlier_detection",
         label="Outlier Detection",
         scope="generic",
-        description="Flag outliers in a numeric column using Z-score or IQR method.",
+        description=(
+            "Single-variable: histogram + strip plot with outlier regions. "
+            "Two-variable: scatter plot with outliers as red ✕ and threshold boundary lines. "
+            "Methods: Z-score, IQR, or Isolation Forest (requires scikit-learn)."
+        ),
         params=[
-            ParamSpec("column", "select_column", default="", label="Column", dtype_filter="numeric"),
-            ParamSpec("method", "select", default="zscore", label="Method", options=["zscore", "iqr"]),
-            ParamSpec("threshold", "int", default=3, label="Threshold"),
+            ParamSpec("x_column", "select_column", default="", label="X variable", dtype_filter="numeric"),
+            ParamSpec("y_column", "select_column", default="", label="Y variable (optional — leave same as X for single-variable mode)", dtype_filter="numeric"),
+            ParamSpec("method", "select", default="zscore", label="Method", options=["zscore", "iqr", "isolation_forest"]),
+            ParamSpec("threshold", "int", default=3, label="Threshold (Z-score σ or IQR multiplier)"),
         ],
         fn=run_outlier_detection,
         has_chart=True,

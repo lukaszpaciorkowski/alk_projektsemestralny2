@@ -303,17 +303,43 @@ class TestGenericAnalytics:
         assert isinstance(result_df, pd.DataFrame)
         assert len(result_df) == 2
 
-    def test_outlier_detection_zscore(self, heart_df):
+    def test_outlier_detection_zscore_single(self, heart_df):
         fn = REGISTRY["generic.outlier_detection"]
-        result_df, fig = fn.fn(heart_df, self._meta(heart_df), column="chol", method="zscore", threshold=3)
+        result_df, fig = fn.fn(
+            heart_df, self._meta(heart_df),
+            x_column="chol", y_column="chol", method="zscore", threshold=3,
+        )
         assert isinstance(result_df, pd.DataFrame)
         assert "outlier_count" in result_df.columns
         assert fig is not None
 
-    def test_outlier_detection_iqr(self, heart_df):
+    def test_outlier_detection_iqr_single(self, heart_df):
         fn = REGISTRY["generic.outlier_detection"]
-        result_df, fig = fn.fn(heart_df, self._meta(heart_df), column="age", method="iqr", threshold=1)
+        result_df, fig = fn.fn(
+            heart_df, self._meta(heart_df),
+            x_column="age", y_column="age", method="iqr", threshold=1,
+        )
         assert int(result_df["outlier_count"].iloc[0]) >= 0
+        assert fig is not None
+
+    def test_outlier_detection_two_var_zscore(self, heart_df):
+        fn = REGISTRY["generic.outlier_detection"]
+        result_df, fig = fn.fn(
+            heart_df, self._meta(heart_df),
+            x_column="age", y_column="chol", method="zscore", threshold=3,
+        )
+        assert "outlier_count" in result_df.columns
+        assert "x_column" in result_df.columns
+        assert fig is not None
+
+    def test_outlier_detection_two_var_iqr(self, heart_df):
+        fn = REGISTRY["generic.outlier_detection"]
+        result_df, fig = fn.fn(
+            heart_df, self._meta(heart_df),
+            x_column="age", y_column="thalach", method="iqr", threshold=2,
+        )
+        assert int(result_df["outlier_count"].iloc[0]) >= 0
+        assert int(result_df["total_points"].iloc[0]) > 0
 
     def test_chi_square_returns_statistic(self, heart_df):
         fn = REGISTRY["generic.chi_square"]
