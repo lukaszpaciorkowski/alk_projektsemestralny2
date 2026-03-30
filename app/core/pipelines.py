@@ -117,24 +117,46 @@ _TEMPLATES = [
 # ---------------------------------------------------------------------------
 
 def ensure_pipelines_tables(engine: Engine) -> None:
-    """Create tables and seed templates if the pipelines table is empty."""
+    """Create tables and upsert built-in templates by name.
+
+    Templates are matched by name; if a row with that name already exists its
+    steps are updated to the current definition so stale DB records are always
+    corrected when the app starts.  User-created pipelines (names not in
+    _TEMPLATES) are never touched.
+    """
     with engine.begin() as conn:
         conn.execute(text(_CREATE_PIPELINES_SQL))
         conn.execute(text(_CREATE_RUNS_SQL))
-        count = conn.execute(text("SELECT COUNT(*) FROM _pipelines")).fetchone()[0]
-        if count == 0:
-            for t in _TEMPLATES:
+
+        existing_names: set[str] = {
+            row[0]
+            for row in conn.execute(text("SELECT name FROM _pipelines")).fetchall()
+        }
+
+        for t in _TEMPLATES:
+            params = {
+                "name": t["name"],
+                "description": t["description"],
+                "dataset_type": t["dataset_type"],
+                "steps": json.dumps(t["steps"]),
+            }
+            if t["name"] in existing_names:
+                # Update steps/description in case the template changed
+                conn.execute(
+                    text(
+                        "UPDATE _pipelines "
+                        "SET description=:description, dataset_type=:dataset_type, steps=:steps "
+                        "WHERE name=:name"
+                    ),
+                    params,
+                )
+            else:
                 conn.execute(
                     text(
                         "INSERT INTO _pipelines (name, description, dataset_type, steps) "
                         "VALUES (:name, :description, :dataset_type, :steps)"
                     ),
-                    {
-                        "name": t["name"],
-                        "description": t["description"],
-                        "dataset_type": t["dataset_type"],
-                        "steps": json.dumps(t["steps"]),
-                    },
+                    params,
                 )
 
 
