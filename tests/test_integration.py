@@ -767,8 +767,8 @@ class TestPageFileAST:
     def test_exploration_page(self):
         self._parse_ok(self.VIEW_DIR / "2_exploration.py")
 
-    def test_adhoc_charts_page(self):
-        self._parse_ok(self.VIEW_DIR / "3_adhoc_charts.py")
+    def test_dashboards_page(self):
+        self._parse_ok(self.VIEW_DIR / "3_dashboards.py")
 
     def test_analytics_page(self):
         self._parse_ok(self.VIEW_DIR / "4_analytics.py")
@@ -776,8 +776,8 @@ class TestPageFileAST:
     def test_reports_page(self):
         self._parse_ok(self.VIEW_DIR / "5_reports.py")
 
-    def test_architecture_page(self):
-        self._parse_ok(self.VIEW_DIR / "6_architecture.py")
+    def test_documentation_page(self):
+        self._parse_ok(self.VIEW_DIR / "6_documentation.py")
 
     def test_sidebar_component(self):
         self._parse_ok(self.COMPONENT_DIR / "sidebar.py")
@@ -817,7 +817,7 @@ class TestLiveApp:
         # Streamlit redirects non-default pages — accept 200 or 3xx
         assert status in (200, 301, 302, 303, 307, 308)
 
-    def test_adhoc_charts_url(self):
-        # We set url_path="adhoc_charts" explicitly
-        status = self._get("/adhoc_charts")
+    def test_dashboards_url(self):
+        # We set url_path="dashboards" explicitly
+        status = self._get("/dashboards")
         assert status in (200, 301, 302, 303, 307, 308)

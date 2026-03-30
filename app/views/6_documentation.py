@@ -77,6 +77,464 @@ _SCOPE_BADGE = {
     "diabetes": "🧬 Diabetes",
 }
 
+# ---------------------------------------------------------------------------
+# Per-method documentation content
+# Keys match REGISTRY ids.  Each entry has:
+#   how_it_works  — 2-3 sentence technical description
+#   expected_data — dict with column_types, min_rows, notes
+#   libraries     — list of specific function/class references
+# ---------------------------------------------------------------------------
+
+_METHOD_DETAIL: dict[str, dict] = {
+    # ── Generic ──────────────────────────────────────────────────────────────
+    "generic.describe": {
+        "how_it_works": (
+            "Calls `pandas.DataFrame.describe(include='all')` which computes per-column "
+            "summary statistics. For numeric columns it returns count, mean, std, min, "
+            "25th/50th/75th percentiles, and max. For categorical columns it returns "
+            "count, unique, top (most frequent value), and frequency of the top value."
+        ),
+        "expected_data": {
+            "column_types": "Any — works on both numeric and categorical columns.",
+            "min_rows": "1 row minimum; results are more informative with ≥30 rows.",
+            "notes": "No preprocessing required. Missing values are excluded from each column's statistics independently.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.describe(include='all')`",
+        ],
+    },
+    "generic.correlation": {
+        "how_it_works": (
+            "Selects all numeric columns and computes a pairwise correlation matrix using "
+            "the chosen method. Pearson measures linear relationships, Spearman ranks "
+            "values before correlating (capturing monotonic relationships), and Kendall "
+            "counts concordant vs discordant pairs. The result is displayed as an "
+            "annotated heatmap."
+        ),
+        "expected_data": {
+            "column_types": "At least 2 numeric columns.",
+            "min_rows": "≥10 rows recommended for stable estimates.",
+            "notes": "Rows with any null in a numeric column pair are dropped pairwise. Categorical columns are excluded automatically.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.corr(method=...)`",
+            "`plotly.express`: `imshow()` for the heatmap",
+        ],
+    },
+    "generic.value_counts": {
+        "how_it_works": (
+            "Counts the occurrences of each unique value in the selected column using "
+            "`Series.value_counts()`. The Top N most frequent values are kept; remaining "
+            "values are omitted. Results are plotted as a horizontal bar chart sorted by "
+            "frequency descending."
+        ),
+        "expected_data": {
+            "column_types": "Any column — typically categorical or low-cardinality numeric.",
+            "min_rows": "≥2 rows with at least 2 distinct values.",
+            "notes": "Very high-cardinality columns (IDs, free text) will show many bars — use Top N to limit output.",
+        },
+        "libraries": [
+            "`pandas`: `Series.value_counts()`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "generic.groupby": {
+        "how_it_works": (
+            "Groups the dataset by the selected categorical column and applies an "
+            "aggregation function (mean, sum, count, min, max, or median) to the chosen "
+            "numeric column. Each group becomes a bar in the resulting chart, making it "
+            "easy to compare group-level summaries."
+        ),
+        "expected_data": {
+            "column_types": "One categorical column (group by) and one numeric column (aggregate).",
+            "min_rows": "≥2 rows with at least 2 distinct groups.",
+            "notes": "Rows where either the group column or the value column is null are dropped before aggregation.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.groupby().agg()`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "generic.crosstab": {
+        "how_it_works": (
+            "Builds a contingency table (pivot table) of value counts for two categorical "
+            "columns. Each cell contains the number of rows where the row column equals "
+            "the row label AND the column column equals the column label. The table is "
+            "rendered as a heatmap, making co-occurrence patterns immediately visible."
+        ),
+        "expected_data": {
+            "column_types": "Two categorical (or low-cardinality) columns.",
+            "min_rows": "≥10 rows; ideally ≥5 occurrences per cell for meaningful patterns.",
+            "notes": "Very high-cardinality columns produce large matrices that may be slow to render. Keep cardinality below ~50 values per column for best results.",
+        },
+        "libraries": [
+            "`pandas`: `crosstab()`",
+            "`plotly.express`: `imshow()`",
+        ],
+    },
+    "generic.distribution": {
+        "how_it_works": (
+            "Plots a histogram of the selected numeric column with a smoothed KDE "
+            "(Kernel Density Estimate) curve overlaid. The KDE uses Gaussian kernels via "
+            "scipy to estimate the probability density function of the underlying "
+            "distribution, making it easier to identify the shape, modality, and "
+            "approximate range of the data."
+        ),
+        "expected_data": {
+            "column_types": "One numeric column.",
+            "min_rows": "≥20 rows for a smooth KDE; the histogram works with any number.",
+            "notes": "Null values are dropped before plotting. Extremely skewed distributions may benefit from log-transforming the column first.",
+        },
+        "libraries": [
+            "`plotly.express`: `histogram()`",
+            "`scipy.stats`: `gaussian_kde()` for the KDE overlay",
+            "`numpy`: `linspace()` for the KDE x-axis grid",
+        ],
+    },
+    "generic.null_analysis": {
+        "how_it_works": (
+            "Counts null (NaN / None) values in every column and expresses each as a "
+            "percentage of total rows. Columns are sorted by null percentage descending "
+            "so the most problematic columns appear first. A horizontal bar chart lets "
+            "you quickly identify columns that may need imputation or removal."
+        ),
+        "expected_data": {
+            "column_types": "Any — operates on all columns regardless of type.",
+            "min_rows": "1 row minimum.",
+            "notes": "Columns with 0% nulls are still shown (bar length = 0). The `null_threshold` in `config.json` controls which columns are dropped during ingestion.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.isnull().mean()`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "generic.dtypes": {
+        "how_it_works": (
+            "Inspects every column's dtype, counts the number of non-null values, and "
+            "computes cardinality (number of distinct values). Results are assembled into "
+            "a summary DataFrame and displayed both as a table and as a bar chart of "
+            "cardinality, helping you understand the shape of the dataset before analysis."
+        ),
+        "expected_data": {
+            "column_types": "Any — all columns are included.",
+            "min_rows": "1 row minimum.",
+            "notes": "Cardinality is computed with `Series.nunique()`. Columns stored as TEXT in SQLite are shown as `object` dtype in pandas.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.dtypes`, `Series.nunique()`, `Series.count()`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "generic.pca": {
+        "how_it_works": (
+            "Selects all numeric columns, optionally standardises them with "
+            "`StandardScaler` (zero mean, unit variance), then decomposes the covariance "
+            "matrix with `sklearn.decomposition.PCA`. The chosen component pair is "
+            "plotted as a 2-D scatter with loading arrows (biplot), and a bar chart shows "
+            "the cumulative variance explained by each component."
+        ),
+        "expected_data": {
+            "column_types": "≥2 numeric columns.",
+            "min_rows": "≥`n_components` rows; practically ≥30 rows for meaningful results.",
+            "notes": "Rows with any null in numeric columns are dropped. Standardisation is strongly recommended when columns have different scales.",
+        },
+        "libraries": [
+            "`sklearn.decomposition`: `PCA`",
+            "`sklearn.preprocessing`: `StandardScaler`",
+            "`plotly.express`: `scatter()`",
+            "`numpy`: array operations",
+        ],
+    },
+    "generic.outlier_detection": {
+        "how_it_works": (
+            "In **single-variable mode** (X only), flags values outside the threshold "
+            "boundary using the chosen method and plots a histogram with highlighted "
+            "outlier bins plus a strip/jitter plot. In **two-variable mode** (X and Y "
+            "differ), applies the method per-axis and plots a scatter where outliers on "
+            "either axis are shown as red ✕ markers with threshold lines. "
+            "Z-score uses mean ± k·σ; IQR uses Q1 − k·IQR and Q3 + k·IQR; "
+            "Isolation Forest trains an ensemble of random trees and assigns anomaly "
+            "scores — no threshold parameter is used."
+        ),
+        "expected_data": {
+            "column_types": "One or two numeric columns.",
+            "min_rows": "≥20 rows; Isolation Forest requires ≥10 rows.",
+            "notes": "Null values are dropped. For Isolation Forest, `contamination` is derived from the threshold: `max(0.01, min(0.5, 0.05 × 4/threshold))`.",
+        },
+        "libraries": [
+            "`scipy.stats`: `zscore()`",
+            "`numpy`: IQR computed via `percentile()`",
+            "`sklearn.ensemble`: `IsolationForest`",
+            "`plotly.graph_objects`: `make_subplots()`, `add_trace()`, `add_vline()`, `add_hline()`",
+        ],
+    },
+    "generic.chi_square": {
+        "how_it_works": (
+            "Builds a contingency table of the two selected categorical columns and runs "
+            "`scipy.stats.chi2_contingency`. The test asks whether the distribution of "
+            "one variable is independent of the other. The result includes the χ² "
+            "statistic, p-value, degrees of freedom, and Cramér's V effect size "
+            "(V = √(χ²/(n · min(r-1, c-1)))). The contingency table is rendered as a "
+            "heatmap."
+        ),
+        "expected_data": {
+            "column_types": "Two categorical columns.",
+            "min_rows": "≥5 expected counts per cell (standard rule of thumb); at least 20 rows in practice.",
+            "notes": "Rows with nulls in either column are dropped. Very high-cardinality columns produce sparse tables that violate the expected-count assumption.",
+        },
+        "libraries": [
+            "`scipy.stats`: `chi2_contingency()`",
+            "`pandas`: `crosstab()`",
+            "`plotly.express`: `imshow()`",
+            "`numpy`: `sqrt()` for Cramér's V",
+        ],
+    },
+    "generic.two_group_test": {
+        "how_it_works": (
+            "Splits the numeric column into exactly two groups defined by the group "
+            "column. Student's t-test (`scipy.stats.ttest_ind`) assumes approximate "
+            "normality and equal or unequal variance (Welch's correction applied when "
+            "variances differ). Mann-Whitney U (`scipy.stats.mannwhitneyu`) is a "
+            "non-parametric rank-based alternative that does not assume normality. Both "
+            "tests return a test statistic and p-value."
+        ),
+        "expected_data": {
+            "column_types": "One numeric column and one categorical column with exactly 2 distinct values.",
+            "min_rows": "≥10 rows per group for t-test; Mann-Whitney works with fewer.",
+            "notes": "If the group column has more or fewer than 2 groups after null removal, the function returns an error message.",
+        },
+        "libraries": [
+            "`scipy.stats`: `ttest_ind()`, `mannwhitneyu()`",
+            "`plotly.express`: `box()`",
+        ],
+    },
+    "generic.multi_group_test": {
+        "how_it_works": (
+            "Splits the numeric column into ≥2 groups and first tests each group for "
+            "normality with Shapiro-Wilk. If all groups are normal, one-way ANOVA "
+            "(`scipy.stats.f_oneway`) is used; otherwise Kruskal-Wallis "
+            "(`scipy.stats.kruskal`) is applied. Both test whether the group distributions "
+            "have the same central tendency. The result includes the test statistic, "
+            "p-value, and which test was chosen."
+        ),
+        "expected_data": {
+            "column_types": "One numeric column and one categorical group column with ≥2 distinct values.",
+            "min_rows": "≥5 rows per group; ≥10 per group for reliable Shapiro-Wilk normality assessment.",
+            "notes": "Groups with fewer than 3 rows are excluded from the normality check. Very large groups (>5000 rows) skip Shapiro-Wilk and default to Kruskal-Wallis.",
+        },
+        "libraries": [
+            "`scipy.stats`: `shapiro()`, `f_oneway()`, `kruskal()`",
+            "`plotly.express`: `box()`",
+        ],
+    },
+    "generic.normality_test": {
+        "how_it_works": (
+            "For samples of ≤5000 rows, Shapiro-Wilk (`scipy.stats.shapiro`) is used — "
+            "it is the most powerful normality test for small to medium samples. For "
+            "larger samples it falls back to the Kolmogorov-Smirnov test against a "
+            "theoretical normal distribution with the sample's mean and std. The result "
+            "includes the W/D statistic, p-value, skewness, and excess kurtosis, plus a "
+            "histogram with a normal curve overlay."
+        ),
+        "expected_data": {
+            "column_types": "One numeric column.",
+            "min_rows": "≥3 rows; meaningful from ≥20 rows.",
+            "notes": "Null values are dropped. Highly skewed or heavy-tailed distributions will almost always reject the null hypothesis of normality.",
+        },
+        "libraries": [
+            "`scipy.stats`: `shapiro()`, `kstest()`, `skew()`, `kurtosis()`",
+            "`plotly.graph_objects`: `Figure` with histogram and normal PDF overlay",
+            "`numpy`: `linspace()`, `exp()` for the normal PDF curve",
+        ],
+    },
+    "generic.kmeans": {
+        "how_it_works": (
+            "Selects all numeric columns, optionally standardises them, then fits "
+            "`sklearn.cluster.KMeans` with the requested number of clusters and "
+            "`random_state=42`. Cluster assignments are projected onto the first two PCA "
+            "components for visualisation. An elbow plot (inertia vs k for k = 2…10) and "
+            "the silhouette score help assess the optimal number of clusters."
+        ),
+        "expected_data": {
+            "column_types": "≥2 numeric columns.",
+            "min_rows": "≥`n_clusters` rows; practically ≥50 rows for stable clusters.",
+            "notes": "Rows with any null in numeric columns are dropped. Standardisation is recommended when columns have different units or scales.",
+        },
+        "libraries": [
+            "`sklearn.cluster`: `KMeans`",
+            "`sklearn.preprocessing`: `StandardScaler`",
+            "`sklearn.decomposition`: `PCA` (for 2-D projection)",
+            "`sklearn.metrics`: `silhouette_score`",
+            "`plotly.express`: `scatter()`",
+        ],
+    },
+    "generic.feature_importance": {
+        "how_it_works": (
+            "Encodes categorical columns with `LabelEncoder`, then trains a "
+            "`RandomForestClassifier` (for categorical targets) or "
+            "`RandomForestRegressor` (for numeric targets) with 100 trees. Feature "
+            "importances are extracted from `feature_importances_` — the mean decrease "
+            "in impurity across all trees — and plotted as a horizontal bar chart sorted "
+            "by importance descending."
+        ),
+        "expected_data": {
+            "column_types": "One target column (any type) and ≥1 other columns as features.",
+            "min_rows": "≥20 rows; ≥100 rows recommended for stable importance estimates.",
+            "notes": "All columns except the target are used as features after label-encoding. Rows with nulls in any column are dropped.",
+        },
+        "libraries": [
+            "`sklearn.ensemble`: `RandomForestClassifier`, `RandomForestRegressor`",
+            "`sklearn.preprocessing`: `LabelEncoder`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "generic.time_series": {
+        "how_it_works": (
+            "Parses the date column with `pandas.to_datetime`, sorts by date, and plots "
+            "the value column as a line chart. A rolling mean with the specified window "
+            "size is overlaid as a second trace. The rolling mean smooths out short-term "
+            "fluctuations to reveal the underlying trend."
+        ),
+        "expected_data": {
+            "column_types": "One date/datetime column and one numeric value column.",
+            "min_rows": "≥`window` + 1 rows; meaningful trends need ≥30 data points.",
+            "notes": "The date column must be parseable by `pandas.to_datetime`. If parsing fails, the function returns an error. Null rows are dropped.",
+        },
+        "libraries": [
+            "`pandas`: `to_datetime()`, `Series.rolling().mean()`",
+            "`plotly.graph_objects`: `Scatter` (line mode)",
+        ],
+    },
+    "generic.geo_summary": {
+        "how_it_works": (
+            "Aggregates the value column by the location column using the chosen "
+            "aggregation function, then renders a choropleth world map via "
+            "`plotly.express.choropleth`. Plotly auto-detects whether the location column "
+            "contains country names or ISO-3 codes; the `locationmode` parameter can be "
+            "set explicitly if auto-detection fails."
+        ),
+        "expected_data": {
+            "column_types": "One location column (country names or ISO-3 codes) and one numeric value column.",
+            "min_rows": "≥1 row per country; maps with <5 countries will appear sparse.",
+            "notes": "Country name spelling must match Plotly's built-in gazetteer (e.g. 'United States' not 'USA'). Unrecognised locations are silently dropped from the map.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.groupby().agg()`",
+            "`plotly.express`: `choropleth()`",
+        ],
+    },
+
+    # ── Diabetes ─────────────────────────────────────────────────────────────
+    "diabetes.readmission_by_group": {
+        "how_it_works": (
+            "Groups the dataset by the chosen categorical column and calculates the "
+            "readmission rate per group. In binary mode, values '<30', '>30', '1', etc. "
+            "are mapped to 1 (readmitted) and 'NO' / '0' to 0, then the mean is taken "
+            "per group. In multi-class mode, a grouped bar chart shows the raw count of "
+            "each readmission category per group."
+        ),
+        "expected_data": {
+            "column_types": "One categorical group column and the `readmitted` column (values: '<30', '>30', 'NO').",
+            "min_rows": "≥10 rows; ≥20 per group for reliable rate estimates.",
+            "notes": "Requires the diabetes dataset. The `readmitted` column must exist with standard UCI values.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.groupby().agg()`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "diabetes.hba1c_vs_readmission": {
+        "how_it_works": (
+            "Filters the dataset to rows where `A1Cresult` is not missing or 'None', "
+            "then groups by `A1Cresult` (values: 'Norm', '>7', '>8', 'None') and "
+            "computes the readmission rate per group. This directly tests the clinical "
+            "hypothesis that poor glycaemic control (high HbA1c) is associated with "
+            "higher hospital readmission risk."
+        ),
+        "expected_data": {
+            "column_types": "`A1Cresult` column (categorical) and `readmitted` column.",
+            "min_rows": "≥10 rows with non-null HbA1c results.",
+            "notes": "Requires the diabetes dataset with `A1Cresult` column retained (null_threshold ≥ 0.84 needed during ingestion).",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.groupby()`, `Series.map()`",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "diabetes.top_diagnoses": {
+        "how_it_works": (
+            "Joins the flat diabetes table with the enrichment diagnosis table "
+            "(`ds_*_diag`) which maps ICD-9 codes to human-readable descriptions. Groups "
+            "by diagnosis description, computes readmission rate per diagnosis, and "
+            "returns the Top N by rate. This identifies which primary diagnoses are most "
+            "strongly associated with readmission."
+        ),
+        "expected_data": {
+            "column_types": "`diag_1` (ICD-9 code) in the main table; `diagnosis_desc` in the enrichment table.",
+            "min_rows": "≥50 rows with enrichment data loaded.",
+            "notes": "Requires running the enrichment step on the Data Sources page first. Raises `EnrichmentRequiredError` otherwise.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.merge()`, `DataFrame.groupby()`",
+            "`sqlalchemy`: `text()` for enrichment table query",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "diabetes.medication_frequency": {
+        "how_it_works": (
+            "Reads the unpivoted medication table (`ds_*_meds`) created during "
+            "enrichment, which has one row per (encounter, medication, dosage_change) "
+            "triple. Counts occurrences of each medication name and plots the Top N most "
+            "commonly prescribed medications as a bar chart."
+        ),
+        "expected_data": {
+            "column_types": "`medication` and `dosage_change` columns in the enrichment medication table.",
+            "min_rows": "≥10 enriched rows.",
+            "notes": "Requires enrichment. The medication table is generated by `scripts/03_enrich.py` which unpivots the 23 medication columns in the raw diabetes data.",
+        },
+        "libraries": [
+            "`pandas`: `Series.value_counts()`",
+            "`sqlalchemy`: `text()` for medication table query",
+            "`plotly.express`: `bar()`",
+        ],
+    },
+    "diabetes.los_by_readmission": {
+        "how_it_works": (
+            "Groups by the `readmitted` column and computes mean, median, min, and max "
+            "of `time_in_hospital` (length of stay in days). The four statistics are "
+            "plotted side-by-side as grouped bars so you can compare both the average "
+            "and the spread of length of stay across readmission classes."
+        ),
+        "expected_data": {
+            "column_types": "`time_in_hospital` (numeric, days) and `readmitted` columns.",
+            "min_rows": "≥10 rows.",
+            "notes": "Requires the diabetes dataset. Does not require enrichment.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.groupby().agg(['mean', 'median', 'min', 'max'])`",
+            "`plotly.express`: `bar(barmode='group')`",
+        ],
+    },
+    "diabetes.medications_vs_los": {
+        "how_it_works": (
+            "Groups the dataset by `num_medications` (number of distinct medications "
+            "administered during the encounter) and computes the mean "
+            "`time_in_hospital`. Each point in the scatter plot represents one "
+            "unique medication count value, making it easy to see whether patients on "
+            "more medications tend to have longer or shorter hospital stays."
+        ),
+        "expected_data": {
+            "column_types": "`num_medications` (numeric, integer count) and `time_in_hospital` (numeric, days).",
+            "min_rows": "≥10 rows.",
+            "notes": "Requires the diabetes dataset. Does not require enrichment.",
+        },
+        "libraries": [
+            "`pandas`: `DataFrame.groupby().mean()`",
+            "`plotly.express`: `scatter()`",
+        ],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -111,6 +569,28 @@ def _save_to_docs(name: str, mermaid_src: str, png_bytes: bytes | None) -> None:
     _MMD_FILES[name].write_text(mermaid_src, encoding="utf-8")
     if png_bytes is not None:
         _PNG_FILES[name].write_bytes(png_bytes)
+
+
+def _render_method_detail(fn_id: str) -> None:
+    """Render the How it works / Expected data / Libraries subsections."""
+    detail = _METHOD_DETAIL.get(fn_id)
+    if not detail:
+        return
+
+    st.markdown("**How it works**")
+    st.markdown(detail["how_it_works"])
+
+    st.markdown("**What data it needs**")
+    ed = detail["expected_data"]
+    st.markdown(
+        f"- **Column types:** {ed['column_types']}\n"
+        f"- **Minimum rows:** {ed['min_rows']}\n"
+        f"- **Notes:** {ed['notes']}"
+    )
+
+    st.markdown("**Python libraries used**")
+    for lib in detail["libraries"]:
+        st.markdown(f"- {lib}")
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +726,8 @@ for fn in generic_fns:
     with st.expander(f"**{fn.label}**", expanded=False):
         st.markdown(fn.description)
 
+        _render_method_detail(fn.id)
+
         if fn.params:
             rows = []
             for p in fn.params:
@@ -279,6 +761,8 @@ if specialized_fns:
             req_note = " *(requires enrichment)*" if fn.requires_enrichment else ""
             with st.expander(f"**{fn.label}**{req_note}", expanded=False):
                 st.markdown(fn.description)
+
+                _render_method_detail(fn.id)
 
                 if fn.params:
                     rows = []
