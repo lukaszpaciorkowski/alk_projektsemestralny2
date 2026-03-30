@@ -26,6 +26,7 @@ from app.state import add_to_report, init_state, set_active_dataset
 CHART_TYPES = [
     "Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap", "Choropleth Map",
     "Pie", "Donut", "Multi-Line", "Area (Stacked)", "3D Scatter", "Sunburst", "Treemap",
+    "Bubble", "Animated Bubble", "Animated Bar",
 ]
 
 AGG_FUNCS = ["mean", "sum", "count", "min", "max", "median"]
@@ -46,6 +47,23 @@ def _col_category(dtype: str) -> str:
     if "int" in dtype or "float" in dtype:
         return "numeric"
     return "categorical"
+
+
+def _detect_time_cols(meta_raw: list[dict]) -> list[str]:
+    """Return columns that look like time/year columns for animation frame selection."""
+    import re
+    time_cols: list[str] = []
+    year_pattern = re.compile(r"^(year|yr|date|period|time|month|quarter)", re.I)
+    for c in meta_raw:
+        name  = c["name"]
+        dtype = c.get("dtype", "object")
+        if year_pattern.match(name):
+            time_cols.append(name)
+        elif "int" in dtype and name not in time_cols:
+            # Integer column — check if its name hints at a time dimension
+            if any(kw in name.lower() for kw in ("year", "yr", "date", "period")):
+                time_cols.append(name)
+    return time_cols if time_cols else [c["name"] for c in meta_raw]
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +147,13 @@ with st.container(border=True):
 
     # Dynamic axis controls — all params initialised to safe defaults
     x_col = y_col = color_col = facet_col = z_col = size_col = None
+    hover_col = animation_col = None
     path_cols: list[str] = []
     agg_func = "mean"
     bins = 30
     location_mode = "auto"
     top_n = 10
+    log_x = log_y = False
 
     if chart_type == "Choropleth Map":
         c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
@@ -236,6 +256,65 @@ with st.container(border=True):
             y_col = None if _y_opt == "None" else _y_opt
         st.caption("Select path columns in hierarchical order.")
 
+    elif chart_type == "Bubble":
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            x_col = st.selectbox("X axis (numeric)", numeric_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            size_col = st.selectbox("Size (numeric)", numeric_cols or all_cols, key="adhoc_size")
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            _col = st.selectbox("Color (optional)", ["None"] + all_cols, key="adhoc_color")
+            color_col = None if _col == "None" else _col
+        with c5:
+            _hov = st.selectbox("Hover label (optional)", ["None"] + all_cols, key="adhoc_hover")
+            hover_col = None if _hov == "None" else _hov
+        with c6:
+            log_x = st.checkbox("Log X", value=False, key="adhoc_logx")
+            log_y = st.checkbox("Log Y", value=False, key="adhoc_logy")
+        st.caption("💡 Classic Gapminder chart — try X=GDP, Y=life expectancy, Size=population, Color=continent, Hover=country.")
+
+    elif chart_type == "Animated Bubble":
+        time_cols = _detect_time_cols(meta_raw)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            x_col = st.selectbox("X axis (numeric)", numeric_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            size_col = st.selectbox("Size (numeric)", numeric_cols or all_cols, key="adhoc_size")
+        with c4:
+            animation_col = st.selectbox("Animation frame (time column)", time_cols, key="adhoc_anim")
+        c5, c6, c7, c8 = st.columns(4)
+        with c5:
+            _col = st.selectbox("Color (optional)", ["None"] + all_cols, key="adhoc_color")
+            color_col = None if _col == "None" else _col
+        with c6:
+            _hov = st.selectbox("Hover label (optional)", ["None"] + all_cols, key="adhoc_hover")
+            hover_col = None if _hov == "None" else _hov
+        with c7:
+            log_x = st.checkbox("Log X", value=False, key="adhoc_logx")
+            log_y = st.checkbox("Log Y", value=False, key="adhoc_logy")
+        st.caption("▶ Plotly adds a Play button and time slider automatically. Axes are fixed so they don't jump between frames.")
+
+    elif chart_type == "Animated Bar":
+        time_cols = _detect_time_cols(meta_raw)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            x_col = st.selectbox("X axis (categorical)", cat_cols or all_cols, key="adhoc_x")
+        with c2:
+            y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
+        with c3:
+            agg_func = st.selectbox("Agg", AGG_FUNCS, key="adhoc_agg")
+        with c4:
+            _col = st.selectbox("Color (optional)", ["None"] + cat_cols, key="adhoc_color")
+            color_col = None if _col == "None" else _col
+        with c5:
+            animation_col = st.selectbox("Animation frame (time column)", time_cols, key="adhoc_anim")
+        st.caption("▶ Animates bar chart over time — e.g. top diagnoses changing year by year.")
+
     else:  # Bar / Line
         c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 2, 2])
         with c1:
@@ -278,6 +357,10 @@ if plot_clicked and _can_plot:
             size_col=size_col,
             path_cols=path_cols,
             top_n=int(top_n),
+            hover_col=hover_col,
+            animation_col=animation_col,
+            log_x=log_x,
+            log_y=log_y,
         )
 
     st.session_state.setdefault("adhoc_chart_history", [])
@@ -293,6 +376,12 @@ if plot_clicked and _can_plot:
         chart_title = f"{chart_type} — {x_col} × {y_col}"
         if color_col:
             chart_title += f" by {color_col}"
+    elif chart_type == "Bubble":
+        chart_title = f"Bubble — {x_col} vs {y_col} (size={size_col})"
+    elif chart_type == "Animated Bubble":
+        chart_title = f"Animated Bubble — {x_col} vs {y_col} (size={size_col}, frame={animation_col})"
+    elif chart_type == "Animated Bar":
+        chart_title = f"Animated Bar — {agg_func}({y_col}) by {x_col} over {animation_col}"
     else:
         chart_title = f"{chart_type} — {x_col}" + (f" × {y_col}" if y_col else "")
         if color_col:

@@ -1,7 +1,9 @@
 """
 chart_builder.py — build_chart() dispatcher for Ad Hoc Charts page.
 
-Supported chart types: Bar, Line, Scatter, Box, Histogram, Heatmap, Choropleth Map.
+Supported chart types: Bar, Line, Scatter, Box, Histogram, Heatmap,
+Choropleth Map, Pie, Donut, Multi-Line, Area (Stacked), 3D Scatter,
+Sunburst, Treemap, Bubble, Animated Bubble, Animated Bar.
 Never raises — catches all plotly errors and returns an annotated figure.
 """
 
@@ -33,11 +35,14 @@ def build_chart(
     filters: list[Filter] | None = None,
     sample_limit: int = 50_000,
     location_mode: str = "country names",
-    # New chart type params
     z_col: str | None = None,
     size_col: str | None = None,
     path_cols: list[str] | None = None,
     top_n: int = 10,
+    hover_col: str | None = None,
+    animation_col: str | None = None,
+    log_x: bool = False,
+    log_y: bool = False,
 ) -> go.Figure:
     """
     Build a Plotly figure for the given chart configuration.
@@ -47,7 +52,8 @@ def build_chart(
         engine: SQLAlchemy engine.
         chart_type: One of "Bar", "Line", "Scatter", "Box", "Histogram", "Heatmap",
                     "Choropleth Map", "Pie", "Donut", "Multi-Line", "Area (Stacked)",
-                    "3D Scatter", "Sunburst", "Treemap".
+                    "3D Scatter", "Sunburst", "Treemap", "Bubble",
+                    "Animated Bubble", "Animated Bar".
         x_col: X-axis / category / location column.
         y_col: Y-axis / value column.
         color_col: Optional color / group-by column.
@@ -58,9 +64,13 @@ def build_chart(
         sample_limit: Max rows to load.
         location_mode: Plotly locationmode for Choropleth.
         z_col: Z-axis column for 3D Scatter.
-        size_col: Size column for 3D Scatter.
+        size_col: Size / bubble-size column.
         path_cols: Hierarchical path columns for Sunburst / Treemap.
         top_n: Max slices before grouping into "Other" (Pie / Donut).
+        hover_col: Hover-name column for Bubble charts.
+        animation_col: Animation-frame column for animated charts.
+        log_x: Use log scale on X axis (Bubble charts).
+        log_y: Use log scale on Y axis (Bubble charts).
 
     Returns:
         A Plotly Figure. On error, returns a figure with an annotation.
@@ -80,6 +90,8 @@ def build_chart(
             df, chart_type, x_col, y_col, color_col, facet_col,
             agg_func, bins, location_mode,
             z_col=z_col, size_col=size_col, path_cols=path_cols or [], top_n=top_n,
+            hover_col=hover_col, animation_col=animation_col,
+            log_x=log_x, log_y=log_y,
         )
 
     except Exception as exc:
@@ -101,6 +113,10 @@ def _dispatch(
     size_col: str | None = None,
     path_cols: list[str] | None = None,
     top_n: int = 10,
+    hover_col: str | None = None,
+    animation_col: str | None = None,
+    log_x: bool = False,
+    log_y: bool = False,
 ) -> go.Figure:
     """Dispatch to the correct chart builder."""
     ct = chart_type.lower()
@@ -127,6 +143,14 @@ def _dispatch(
         return _sunburst(df, path_cols or [], y_col)
     if ct == "treemap":
         return _treemap(df, path_cols or [], y_col)
+    if ct == "bubble":
+        return _bubble(df, x_col or "", y_col or "", size_col or "", color_col, hover_col,
+                       log_x=log_x, log_y=log_y)
+    if ct == "animated bubble":
+        return _bubble(df, x_col or "", y_col or "", size_col or "", color_col, hover_col,
+                       animation_col=animation_col, log_x=log_x, log_y=log_y)
+    if ct == "animated bar":
+        return _animated_bar(df, x_col or "", y_col or "", color_col, animation_col or "", agg_func)
 
     return _error_fig(f"Unknown chart type: {chart_type!r}")
 
@@ -497,6 +521,124 @@ def _treemap(
         color_discrete_sequence=px.colors.qualitative.Pastel,
     )
     fig.update_traces(textinfo="label+value+percent entry")
+    return fig
+
+
+def _bubble(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    size_col: str,
+    color_col: str | None,
+    hover_col: str | None,
+    animation_col: str | None = None,
+    log_x: bool = False,
+    log_y: bool = False,
+) -> go.Figure:
+    for col, label in ((x_col, "X"), (y_col, "Y"), (size_col, "Size")):
+        if not col:
+            return _error_fig(f"{label} column is required for Bubble chart.")
+        if col not in df.columns:
+            return _error_fig(f"Column '{col}' not found.")
+
+    # Determine which columns to keep before dropping nulls
+    use_cols = [c for c in [x_col, y_col, size_col, color_col, hover_col, animation_col]
+                if c and c in df.columns]
+    required = [x_col, y_col, size_col]
+    plot_df = df[use_cols].dropna(subset=required)
+
+    if plot_df.empty:
+        return _error_fig("No data after dropping nulls in X, Y, or Size columns.")
+
+    # Size must be non-negative
+    if plot_df[size_col].min() < 0:
+        plot_df = plot_df.copy()
+        plot_df[size_col] = plot_df[size_col] - plot_df[size_col].min()
+
+    kwargs: dict = {
+        "data_frame": plot_df,
+        "x":          x_col,
+        "y":          y_col,
+        "size":       size_col,
+        "size_max":   60,
+        "log_x":      log_x,
+        "log_y":      log_y,
+        "opacity":    0.7,
+    }
+    if color_col and color_col in df.columns:
+        kwargs["color"] = color_col
+    if hover_col and hover_col in df.columns:
+        kwargs["hover_name"] = hover_col
+    if animation_col and animation_col in df.columns:
+        # Sort by animation column so frames appear in order
+        plot_df = plot_df.sort_values(animation_col)
+        kwargs["data_frame"] = plot_df
+        kwargs["animation_frame"] = animation_col
+        # Fix axis ranges so they don't jump between frames
+        x_vals = pd.to_numeric(plot_df[x_col], errors="coerce").dropna()
+        y_vals = pd.to_numeric(plot_df[y_col], errors="coerce").dropna()
+        if not x_vals.empty and not y_vals.empty:
+            x_pad = (x_vals.max() - x_vals.min()) * 0.1 or x_vals.max() * 0.1 or 1
+            y_pad = (y_vals.max() - y_vals.min()) * 0.1 or y_vals.max() * 0.1 or 1
+            kwargs["range_x"] = [max(0, x_vals.min() - x_pad) if not log_x else x_vals.min() * 0.9,
+                                  x_vals.max() + x_pad]
+            kwargs["range_y"] = [max(0, y_vals.min() - y_pad) if not log_y else y_vals.min() * 0.9,
+                                  y_vals.max() + y_pad]
+
+    title_parts = [f"Bubble: {x_col} vs {y_col} (size={size_col})"]
+    if animation_col:
+        title_parts.append(f"animated by {animation_col}")
+    kwargs["title"] = " — ".join(title_parts)
+
+    fig = px.scatter(**kwargs)
+    return fig
+
+
+def _animated_bar(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    color_col: str | None,
+    animation_col: str,
+    agg_func: str,
+) -> go.Figure:
+    for col, label in ((x_col, "X"), (y_col, "Y"), (animation_col, "Animation frame")):
+        if not col:
+            return _error_fig(f"{label} column is required for Animated Bar.")
+        if col not in df.columns:
+            return _error_fig(f"Column '{col}' not found.")
+
+    # Aggregate: group by [animation_col, x_col, color_col]
+    group_cols = [animation_col, x_col]
+    if color_col and color_col in df.columns:
+        group_cols.append(color_col)
+
+    fn_map = {"mean": "mean", "sum": "sum", "count": "count",
+              "min": "min", "max": "max", "median": "median"}
+    fn = fn_map.get(agg_func, "mean")
+
+    if fn == "count":
+        plot_df = df.groupby(group_cols).size().reset_index(name=y_col)
+    else:
+        plot_df = df.groupby(group_cols)[y_col].agg(fn).reset_index()
+
+    plot_df = plot_df.sort_values(animation_col)
+
+    y_max = pd.to_numeric(plot_df[y_col], errors="coerce").max()
+    y_range = [0, y_max * 1.1 if y_max and y_max > 0 else 1]
+
+    color = color_col if color_col and color_col in df.columns else None
+    fig = px.bar(
+        plot_df,
+        x=x_col,
+        y=y_col,
+        color=color,
+        animation_frame=animation_col,
+        barmode="group" if color else "relative",
+        range_y=y_range,
+        title=f"Animated Bar: {agg_func}({y_col}) by {x_col} over {animation_col}",
+    )
+    fig.update_layout(xaxis_tickangle=-45)
     return fig
 
 

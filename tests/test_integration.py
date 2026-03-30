@@ -747,6 +747,62 @@ class TestChartBuilder:
         # Should either return error or gracefully use first column
         assert "error" in result_df.columns or len(result_df) > 0
 
+    def test_bubble_chart(self, heart_table, prod_engine):
+        """Bubble chart builds without error."""
+        import plotly.graph_objects as go
+        fig = build_chart(
+            table_name=heart_table["table_name"],
+            engine=prod_engine,
+            chart_type="Bubble",
+            x_col="age",
+            y_col="chol",
+            size_col="trestbps",
+            color_col="sex",
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_bubble_chart_missing_size_returns_error(self, heart_table, prod_engine):
+        """Bubble without size_col returns an error figure, not an exception."""
+        import plotly.graph_objects as go
+        fig = build_chart(
+            table_name=heart_table["table_name"],
+            engine=prod_engine,
+            chart_type="Bubble",
+            x_col="age",
+            y_col="chol",
+            size_col=None,
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_animated_bubble_chart(self, heart_table, prod_engine):
+        """Animated Bubble builds without error (animation on a categorical column)."""
+        import plotly.graph_objects as go
+        fig = build_chart(
+            table_name=heart_table["table_name"],
+            engine=prod_engine,
+            chart_type="Animated Bubble",
+            x_col="age",
+            y_col="chol",
+            size_col="trestbps",
+            color_col="sex",
+            animation_col="cp",
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_animated_bar_chart(self, heart_table, prod_engine):
+        """Animated Bar builds without error."""
+        import plotly.graph_objects as go
+        fig = build_chart(
+            table_name=heart_table["table_name"],
+            engine=prod_engine,
+            chart_type="Animated Bar",
+            x_col="sex",
+            y_col="age",
+            agg_func="mean",
+            animation_col="cp",
+        )
+        assert isinstance(fig, go.Figure)
+
 
 # ---------------------------------------------------------------------------
 # 7. Page file AST validation
