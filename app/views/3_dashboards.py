@@ -259,7 +259,7 @@ with st.container(border=True):
     elif chart_type == "Bubble":
         c1, c2, c3 = st.columns(3)
         with c1:
-            x_col = st.selectbox("X axis (numeric)", numeric_cols or all_cols, key="adhoc_x")
+            x_col = st.selectbox("X axis", all_cols, key="adhoc_x")
         with c2:
             y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
         with c3:
@@ -280,7 +280,7 @@ with st.container(border=True):
         time_cols = _detect_time_cols(meta_raw)
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            x_col = st.selectbox("X axis (numeric)", numeric_cols or all_cols, key="adhoc_x")
+            x_col = st.selectbox("X axis", all_cols, key="adhoc_x")
         with c2:
             y_col = st.selectbox("Y axis (numeric)", numeric_cols or all_cols, key="adhoc_y")
         with c3:

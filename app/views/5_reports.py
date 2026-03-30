@@ -37,6 +37,49 @@ from app.state import (
 
 CONFIG_PATH = "config.json"
 
+
+def _load_saved_report_into_state(report_id: int, engine) -> None:
+    """Restore a saved report snapshot into Streamlit session state."""
+    from app.core.reports import (
+        clear_all_reports,
+        load_saved_report,
+        save_report_item,
+    )
+    config = load_saved_report(engine, report_id)
+    # Overwrite widget-bound keys so the inputs re-render with restored values
+    st.session_state["report_title"] = config.get("title", "")
+    st.session_state["report_author"] = config.get("author", "")
+    secs = config.get("sections", {})
+    st.session_state["inc_goal"]        = secs.get("goal", True)
+    st.session_state["inc_dataset"]     = secs.get("dataset", True)
+    st.session_state["inc_methodology"] = secs.get("methodology", True)
+    # Replace report items in DB and session cache
+    clear_all_reports(engine)
+    st.session_state["report_items"] = []
+    for saved_item in config.get("items", []):
+        try:
+            fig = pio.from_json(saved_item["fig_json"])
+        except Exception:
+            continue
+        item_id = save_report_item(
+            engine,
+            title=saved_item["title"],
+            fig=fig,
+            filters=saved_item.get("filters", []),
+            dataset_name=saved_item.get("dataset_name", ""),
+            row_count=saved_item.get("row_count"),
+            total_rows=saved_item.get("total_rows"),
+        )
+        st.session_state["report_items"].append({
+            "id": item_id,
+            "title": saved_item["title"],
+            "fig": fig,
+            "filters": saved_item.get("filters", []),
+            "dataset_name": saved_item.get("dataset_name", ""),
+            "row_count": saved_item.get("row_count"),
+            "total_rows": saved_item.get("total_rows"),
+        })
+
 _OP_LABELS: dict[str, str] = {
     "eq": "=", "neq": "≠", "gte": "≥", "lte": "≤",
     "gt": ">", "lt": "<",
@@ -336,6 +379,33 @@ st.markdown(
     "Export as HTML or PDF."
 )
 
+# ---- Load Saved Report ----
+if _engine is not None:
+    from app.core.reports import delete_saved_report, list_saved_reports
+    _saved = list_saved_reports(_engine)
+    if _saved:
+        with st.expander("📂 Load Saved Report", expanded=False):
+            _sr_options = {
+                f"{r['name']} (saved {r['created_at'][:10]})": r["id"]
+                for r in _saved
+            }
+            _lr_col1, _lr_col2, _lr_col3 = st.columns([4, 1, 1])
+            with _lr_col1:
+                _selected_sr_label = st.selectbox(
+                    "Saved reports", list(_sr_options.keys()), key="load_sr_sel",
+                    label_visibility="collapsed",
+                )
+            with _lr_col2:
+                if st.button("Load", type="primary", use_container_width=True):
+                    _load_saved_report_into_state(_sr_options[_selected_sr_label], _engine)
+                    st.success("Report loaded.")
+                    st.rerun()
+            with _lr_col3:
+                if st.button("Delete", use_container_width=True):
+                    delete_saved_report(_engine, _sr_options[_selected_sr_label])
+                    st.success("Deleted.")
+                    st.rerun()
+
 items = get_report_items()
 
 # ---- Report Items List ----
@@ -374,20 +444,50 @@ st.divider()
 st.subheader("Report Settings")
 meta_col1, meta_col2 = st.columns(2)
 with meta_col1:
-    report_title = st.text_input("Report Title", value="Diabetes Patient Data Analysis")
+    report_title = st.text_input(
+        "Report Title", value="Diabetes Patient Data Analysis", key="report_title"
+    )
 with meta_col2:
-    report_author = st.text_input("Author", value="ALK Student")
+    report_author = st.text_input("Author", value="ALK Student", key="report_author")
 
 st.markdown("**Include sections:**")
 sc1, sc2, sc3 = st.columns(3)
 with sc1:
-    inc_goal = st.checkbox("Goal", value=True)
+    inc_goal = st.checkbox("Goal", value=True, key="inc_goal")
 with sc2:
-    inc_dataset = st.checkbox("Dataset", value=True)
+    inc_dataset = st.checkbox("Dataset", value=True, key="inc_dataset")
 with sc3:
-    inc_methodology = st.checkbox("Methodology", value=True)
+    inc_methodology = st.checkbox("Methodology", value=True, key="inc_methodology")
 
 sections = {"goal": inc_goal, "dataset": inc_dataset, "methodology": inc_methodology}
+
+# ---- Save Report Configuration ----
+st.divider()
+st.subheader("Save Report Configuration")
+_save_col1, _save_col2 = st.columns([3, 1])
+with _save_col1:
+    _save_name = st.text_input(
+        "Save as", placeholder="My Analysis Report", key="save_report_name",
+        label_visibility="collapsed",
+    )
+with _save_col2:
+    if st.button("💾 Save Report", type="primary", use_container_width=True):
+        if not _save_name.strip():
+            st.warning("Enter a name for the report.")
+        elif _engine is None:
+            st.error("No database connection.")
+        else:
+            from app.core.reports import save_report_config
+            save_report_config(
+                _engine,
+                name=_save_name.strip(),
+                title=report_title,
+                author=report_author,
+                sections=sections,
+                items=items,
+            )
+            st.success(f"Report '{_save_name.strip()}' saved.")
+            st.rerun()
 
 st.divider()
 

@@ -15,3 +15,10 @@ CREATE TABLE IF NOT EXISTS _datasets (
     uploaded_at       TEXT    NOT NULL,
     description       TEXT    NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS _saved_reports (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    config     TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);

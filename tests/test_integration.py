@@ -59,8 +59,11 @@ def _make_fresh_engine():
     """In-memory SQLite engine with bootstrap schema."""
     engine = create_engine("sqlite:///:memory:")
     sql = BOOTSTRAP_SQL.read_text()
+    # Execute each statement separately (SQLAlchemy/sqlite3 only allows one at a time)
+    statements = [s.strip() for s in sql.split(";") if s.strip()]
     with engine.begin() as conn:
-        conn.execute(text(sql))
+        for stmt in statements:
+            conn.execute(text(stmt))
     return engine
 
 
@@ -803,6 +806,19 @@ class TestChartBuilder:
         )
         assert isinstance(fig, go.Figure)
 
+    def test_bubble_chart_categorical_x(self, heart_table, prod_engine):
+        """Bubble chart allows a categorical column on X axis."""
+        import plotly.graph_objects as go
+        fig = build_chart(
+            table_name=heart_table["table_name"],
+            engine=prod_engine,
+            chart_type="Bubble",
+            x_col="sex",          # categorical
+            y_col="chol",         # numeric
+            size_col="trestbps",  # numeric
+        )
+        assert isinstance(fig, go.Figure)
+
 
 # ---------------------------------------------------------------------------
 # 7. Page file AST validation
@@ -1019,7 +1035,90 @@ class TestPipelineCRUD:
 
 
 # ---------------------------------------------------------------------------
-# 9. Live HTTP smoke test
+# 9. Saved Reports CRUD
+# ---------------------------------------------------------------------------
+
+class TestSavedReports:
+    """Tests for save_report_config / list_saved_reports / load_saved_report / delete."""
+
+    @pytest.fixture
+    def mem_engine(self):
+        from sqlalchemy import create_engine as _ce
+        from app.core.reports import ensure_saved_reports_table
+        eng = _ce("sqlite:///:memory:")
+        ensure_saved_reports_table(eng)
+        return eng
+
+    def _fake_items(self):
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        return [{"title": "Test Chart", "fig": fig, "filters": [], "dataset_name": "ds", "row_count": 10, "total_rows": 100}]
+
+    def test_save_and_list(self, mem_engine):
+        from app.core.reports import list_saved_reports, save_report_config
+        before = len(list_saved_reports(mem_engine))
+        save_report_config(mem_engine, "My Report", "Title", "Author",
+                           {"goal": True, "dataset": False, "methodology": True},
+                           self._fake_items())
+        after = list_saved_reports(mem_engine)
+        assert len(after) == before + 1
+        assert after[0]["name"] == "My Report"
+
+    def test_load_restores_config(self, mem_engine):
+        from app.core.reports import load_saved_report, save_report_config
+        rid = save_report_config(mem_engine, "Load Me", "My Title", "Jane",
+                                 {"goal": True, "dataset": True, "methodology": False},
+                                 self._fake_items())
+        config = load_saved_report(mem_engine, rid)
+        assert config["title"] == "My Title"
+        assert config["author"] == "Jane"
+        assert config["sections"]["methodology"] is False
+        assert len(config["items"]) == 1
+        assert config["items"][0]["title"] == "Test Chart"
+
+    def test_load_deserializes_fig_json(self, mem_engine):
+        import plotly.io as pio
+        from app.core.reports import load_saved_report, save_report_config
+        rid = save_report_config(mem_engine, "Fig Test", "T", "A",
+                                 {"goal": True, "dataset": True, "methodology": True},
+                                 self._fake_items())
+        config = load_saved_report(mem_engine, rid)
+        # fig_json must be deserializable back to a Figure
+        fig = pio.from_json(config["items"][0]["fig_json"])
+        import plotly.graph_objects as go
+        assert isinstance(fig, go.Figure)
+
+    def test_delete_removes_entry(self, mem_engine):
+        from app.core.reports import delete_saved_report, list_saved_reports, save_report_config
+        rid = save_report_config(mem_engine, "Delete Me", "T", "A",
+                                 {"goal": True, "dataset": True, "methodology": True}, [])
+        before = len(list_saved_reports(mem_engine))
+        delete_saved_report(mem_engine, rid)
+        assert len(list_saved_reports(mem_engine)) == before - 1
+
+    def test_load_missing_raises(self, mem_engine):
+        from app.core.reports import load_saved_report
+        with pytest.raises(ValueError, match="not found"):
+            load_saved_report(mem_engine, 99999)
+
+    def test_save_empty_items(self, mem_engine):
+        from app.core.reports import load_saved_report, save_report_config
+        rid = save_report_config(mem_engine, "Empty", "T", "A",
+                                 {"goal": False, "dataset": False, "methodology": False}, [])
+        config = load_saved_report(mem_engine, rid)
+        assert config["items"] == []
+
+    def test_ensure_idempotent(self, mem_engine):
+        from app.core.reports import ensure_saved_reports_table, list_saved_reports, save_report_config
+        save_report_config(mem_engine, "Existing", "T", "A",
+                           {"goal": True, "dataset": True, "methodology": True}, [])
+        count_before = len(list_saved_reports(mem_engine))
+        ensure_saved_reports_table(mem_engine)  # must not drop/recreate
+        assert len(list_saved_reports(mem_engine)) == count_before
+
+
+# ---------------------------------------------------------------------------
+# 10. Live HTTP smoke test
 # ---------------------------------------------------------------------------
 
 class TestLiveApp:
