@@ -130,7 +130,13 @@ def render_filter_panel(
         List of Filter objects to pass to fetch_table() / row_count().
     """
     state_key = f"{key_prefix}_filters"
-    if state_key not in st.session_state:
+    table_key = f"{key_prefix}_filter_table"
+
+    # Clear filters when the dataset changes; preserve them across page navigation
+    if st.session_state.get(table_key) != table_name:
+        st.session_state[state_key] = []
+        st.session_state[table_key] = table_name
+    elif state_key not in st.session_state:
         st.session_state[state_key] = []
 
     # Add / Clear controls

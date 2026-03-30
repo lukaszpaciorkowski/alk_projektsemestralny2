@@ -330,6 +330,22 @@ with st.container(border=True):
             facet_col = st.selectbox("Facet (optional)", ["None"] + cat_cols, key="adhoc_facet")
             facet_col = None if facet_col == "None" else facet_col
 
+    # Sort controls — useful for Bar/Line to order bars by value
+    _show_sort = chart_type not in ("Sunburst", "Treemap", "Pie", "Donut",
+                                    "Choropleth Map", "Animated Bubble", "Animated Bar")
+    sort_by: str | None = None
+    sort_ascending: bool = True
+    if _show_sort and (x_col or y_col):
+        sort_c1, sort_c2 = st.columns([2, 4])
+        with sort_c1:
+            _sort_col_opts = ["None"] + ([x_col] if x_col else []) + ([y_col] if y_col and y_col != x_col else [])
+            _sort_col = st.selectbox("Sort by", _sort_col_opts, key="adhoc_sort_col")
+            sort_by = None if _sort_col == "None" else _sort_col
+        with sort_c2:
+            if sort_by:
+                _sort_dir = st.selectbox("Direction", ["Ascending", "Descending"], key="adhoc_sort_dir")
+                sort_ascending = _sort_dir == "Ascending"
+
     btn_col, reset_col = st.columns([1, 5])
     with btn_col:
         plot_clicked = st.button("Plot", type="primary", use_container_width=True)
@@ -361,6 +377,8 @@ if plot_clicked and _can_plot:
             animation_col=animation_col,
             log_x=log_x,
             log_y=log_y,
+            sort_by=sort_by,
+            sort_ascending=sort_ascending,
         )
 
     st.session_state.setdefault("adhoc_chart_history", [])

@@ -43,6 +43,8 @@ def build_chart(
     animation_col: str | None = None,
     log_x: bool = False,
     log_y: bool = False,
+    sort_by: str | None = None,
+    sort_ascending: bool = True,
 ) -> go.Figure:
     """
     Build a Plotly figure for the given chart configuration.
@@ -85,6 +87,9 @@ def build_chart(
 
         if df.empty:
             return _error_fig("No data matched the current filters.")
+
+        if sort_by and sort_by in df.columns:
+            df = df.sort_values(sort_by, ascending=sort_ascending)
 
         return _dispatch(
             df, chart_type, x_col, y_col, color_col, facet_col,
@@ -588,6 +593,13 @@ def _bubble(
 
         # Sort consistently: frame first, then entity — same row order every frame
         plot_df = plot_df.sort_values([animation_col, entity_col]).reset_index(drop=True)
+
+        # Coerce numeric columns; fill missing size with 0; drop rows with no position
+        for col in [x_col, y_col, size_col]:
+            if col in plot_df.columns:
+                plot_df[col] = pd.to_numeric(plot_df[col], errors="coerce")
+        plot_df = plot_df.dropna(subset=[x_col, y_col])
+        plot_df[size_col] = plot_df[size_col].fillna(0).clip(lower=0)
 
         kwargs["data_frame"] = plot_df
         kwargs["animation_frame"] = animation_col

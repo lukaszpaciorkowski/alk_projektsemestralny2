@@ -107,7 +107,6 @@ def set_active_dataset(
     st.session_state["active_dataset_type"] = dataset_type
     st.session_state["active_enrichment_status"] = enrichment_status
     st.session_state["active_dataset_meta"] = meta
-    st.session_state["filters"] = []
 
 
 # ---------------------------------------------------------------------------
