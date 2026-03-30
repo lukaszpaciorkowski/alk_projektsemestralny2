@@ -1,39 +1,25 @@
-# Patient Data Analysis — ALK Projekt Egzaminacyjny II
+# Patient Data Analysis Platform
 
 **Course:** Projekt Egzaminacyjny II · Kozminski University (ALK), Warsaw
-**Dataset:** Diabetes 130-US Hospitals 1999–2008 (~100 000 patient encounters)
-**Stack:** Python · SQLite · SQLAlchemy · pandas · plotly · Streamlit · fpdf2
+**Stack:** Python 3.11+ · Streamlit · SQLAlchemy · SQLite · pandas · scikit-learn · plotly · fpdf2
+
+A generic data analysis platform built around the **Diabetes 130-US Hospitals** dataset. Upload any CSV, explore it interactively, run 24 analytical methods, build dashboards, generate reports, and view live-generated architecture diagrams — all from a six-page Streamlit app.
 
 ---
 
-## Project Goal
+## Features
 
-Analyze what patient and treatment factors are associated with **30-day hospital readmission** using a real-world clinical dataset of 100 000 inpatient encounters from 130 US hospitals.
-
-The project demonstrates:
-- Relational database design (3NF schema, 7 tables, indexed FKs)
-- Reproducible ETL pipeline with documented parameters
-- Statistical group analysis and 6 publication-quality visualizations
-- Interactive Streamlit UI with PDF report export
-
----
-
-## Dataset
-
-**Diabetes 130-US Hospitals for Years 1999–2008**
-
-| Property | Value |
-|----------|-------|
-| Source | UCI ML Repository / Kaggle |
-| Rows | ~100 000 patient encounters |
-| Columns | 50+ (demographics, labs, medications, diagnoses, readmission) |
-| License | CC0 Public Domain |
-
-Download from:
-- UCI: https://archive.ics.uci.edu/dataset/296/diabetes+130-us+hospitals+for+years+1999-2008
-- Kaggle: `kaggle datasets download -d brandao/diabetes`
-
-Place the file at `data/raw/diabetic_data.csv` before running the pipeline.
+| Feature | Details |
+|---------|---------|
+| **Generic CSV pipeline** | Upload any CSV → auto-type detection → SQLite storage → analysis |
+| **9 datasets loaded** | Diabetes, Heart Disease (Cleveland), PIMA Indians, Eurostat hospital/mortality, OWID COVID-19, OWID causes of death, World Mortality |
+| **24 analytical methods** | 17 generic + 6 diabetes-specific + geographic summary |
+| **14 chart types** | Bar, Line, Scatter, Box, Histogram, Heatmap, Choropleth, Pie, Donut, Multi-Line, Area (Stacked), 3D Scatter, Sunburst, Treemap |
+| **Interactive filtering** | Column-level filters (=, !=, ≥, ≤, IN, LIKE, IS NULL) on every page |
+| **PDF/HTML reports** | Compose figures from any analysis; filter context embedded; Unicode font support |
+| **Persistent reports** | Report queue stored in SQLite `_reports` table — survives page refreshes |
+| **Live architecture diagrams** | ER diagram, pipeline flowchart, app architecture — generated from live DB/code via Mermaid |
+| **214 passing tests** | pytest, in-memory SQLite fixtures |
 
 ---
 
@@ -43,206 +29,176 @@ Place the file at `data/raw/diabetic_data.csv` before running the pipeline.
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Place the dataset
-#    data/raw/diabetic_data.csv
+# 2. Launch the app
+streamlit run app/main.py --server.address 0.0.0.0
 
-# 3. Run the full pipeline
-python scripts/01_ingest.py    # validate + clean CSV
-python scripts/02_load.py      # load into SQLite (3NF schema)
-python scripts/03_query.py     # run SQL analyses
-python scripts/04_visualize.py # generate all 6 figures
-python scripts/05_report.py    # export HTML + PDF report
-
-# 4. Launch the Streamlit app
-streamlit run app/main.py
-
-# Or run everything with make
-make install
-make pipeline
-make run
+# 3. Import data
+#    - Open Data Sources → upload any CSV
+#    - Or place data/raw/diabetic_data.csv and run:
+python scripts/01_ingest.py
+python scripts/02_load.py
 ```
 
 ---
 
-## Pipeline
+## Tech Stack
 
-```
-[1] INGEST          [2] LOAD              [3] QUERY
-01_ingest.py   →    02_load.py       →    03_query.py
-CSV validation      SQLite 3NF schema     GROUP BY / JOIN
-null audit          medication unpivot    WINDOW functions
-outlier removal     ICD-9 lookup          parameterized SQL
-
-[4] VISUALIZE       [5] REPORT
-04_visualize.py →   05_report.py
-6 plotly figures    HTML + PDF
-matplotlib/seaborn  fpdf2 embedding
-outputs/figures/    outputs/report/
-```
-
-### Pipeline Parameters (`config.json`)
-
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `null_threshold` | `0.3` | Drop columns with >30% missing values |
-| `outlier_zscore` | `3.0` | Remove rows where any numeric field exceeds z=3.0 |
-| `age_bins` | `[0,30,50,70,100]` | Age group boundaries for readmission analysis |
-| `readmission_binary` | `false` | Merge `<30`+`>30` into one positive class |
-| `top_n_diagnoses` | `10` | Number of diagnoses shown in bar chart |
-| `palette` | `"viridis"` | Matplotlib/seaborn color palette |
-
-All parameters can be overridden via `--config path/to/config.json` on each script.
+| Layer | Libraries |
+|-------|-----------|
+| UI | Streamlit 1.50+ |
+| Database | SQLite via SQLAlchemy 2.0 |
+| Data | pandas, numpy |
+| Statistics | scipy, scikit-learn |
+| Visualisation | plotly, matplotlib, seaborn |
+| Reporting | fpdf2 (PDF), HTML with base64 images |
+| Diagrams | Mermaid CLI (`mmdc`) |
+| Testing | pytest |
 
 ---
 
-## Database Schema
+## Application Pages
 
-Seven normalized tables (3NF):
-
-```
-patients            admissions              admission_types
------------         ---------------         ---------------
-patient_id (PK)     encounter_id (PK)       id (PK)
-race                patient_id (FK)         description
-gender              admission_type_id (FK)
-age_group           discharge_type_id (FK)  discharge_types
-                    time_in_hospital        ---------------
-                    num_lab_procedures      id (PK)
-                    num_medications         description
-                    hba1c_result
-                    readmission             diagnoses_lookup
-                                            ----------------
-medications                                 icd9_code (PK)
------------                                 description
-id (PK)             diagnosis_encounters    category
-encounter_id (FK)   --------------------
-drug_name           id (PK)
-change_indicator    encounter_id (FK)
-                    icd9_code (FK)
-                    diagnosis_position
-```
-
-ER diagram source: `docs/diagrams/er_diagram.mmd`
-DDL: `database/schema.sql`
-
----
-
-## Streamlit UI
-
-Five views, accessible from the sidebar:
-
-| View | Purpose |
+| Page | Purpose |
 |------|---------|
-| **📂 Data Sources** | Upload CSV, trigger ingest pipeline, view import log |
-| **🔍 Data Exploration** | Browse DB tables, column histograms, summary stats |
-| **📊 Analytics** | Filter by age/race/admission type, run 4 analysis models, add charts to report |
-| **📄 Reports** | Assemble selected charts into a PDF or HTML report |
-| **📐 Architecture** | View ER diagram, pipeline flow, and app architecture (Mermaid diagrams) |
-
-Run: `streamlit run app/main.py`
+| **📂 Data Sources** | Upload CSV, trigger import pipeline, view import log, run enrichment |
+| **🔍 Data Exploration** | Browse tables with filters, column stats, mini histograms |
+| **📈 Dashboards** | Build interactive charts from any dataset — 14 chart types |
+| **📊 Analytics** | 24 analytical methods with parameter controls and filter support |
+| **📄 Reports** | Compose figures into PDF/HTML reports with filter context |
+| **📚 Documentation** | Live architecture diagrams + full analytics method reference |
 
 ---
 
-## Analysis & Visualizations
+## Analytics Methods
 
-Six figures produced by `04_visualize.py` and saved to `outputs/figures/`:
+### 🌐 Generic (work on any dataset)
 
-| Figure | Description |
+| Method | Description |
 |--------|-------------|
-| `fig_01_readmission_by_age.png` | Readmission rate (%) by age group — bar chart |
-| `fig_02_readmission_by_admission_type.png` | Readmission rate by admission type — stacked bar |
-| `fig_03_los_distribution.png` | Length-of-stay distribution by readmission class — box plot |
-| `fig_04_top_diagnoses.png` | Top 10 primary diagnoses by readmission rate — horizontal bar |
-| `fig_05_hba1c_vs_readmission.png` | HbA1c test result vs. readmission — grouped bar |
-| `fig_06_medications_vs_los.png` | Number of medications vs. time in hospital — scatter + regression |
+| Descriptive Statistics | pandas `.describe(include='all')` |
+| Correlation Matrix | Pearson / Spearman / Kendall heatmap |
+| Value Counts | Frequency table for categorical columns |
+| Group By / Aggregate | Group + aggregate with mean/sum/count/min/max/median |
+| Cross-tabulation | Pivot table of two categorical columns |
+| Distribution | Histogram with KDE overlay |
+| Null Analysis | Bar chart of null % per column |
+| Data Types | Column type summary with cardinality |
+| Principal Component Analysis | PCA biplot with loading arrows, component pair selector |
+| Outlier Detection | Single-variable (histogram + strip) or two-variable (scatter); Z-score / IQR / Isolation Forest |
+| Chi-Square Test | Test of independence with Cramér's V |
+| Two-Group Comparison | T-test or Mann-Whitney U |
+| Multi-Group Comparison | ANOVA or Kruskal-Wallis (auto-selected) |
+| Normality Test | Shapiro-Wilk (n≤5000) or KS test |
+| K-Means Clustering | Clustering with silhouette score and elbow plot |
+| Feature Importance | Random Forest feature importance |
+| Time Series Trend | Line chart with rolling mean overlay |
+| Geographic Summary | Choropleth world map by aggregated value |
+
+### 🧬 Diabetes-Specific
+
+| Method | Description |
+|--------|-------------|
+| Readmission Rate by Group | Readmission % by any categorical column |
+| HbA1c vs Readmission | Readmission rate by HbA1c test result |
+| Top Diagnoses by Readmission | Top N ICD-9 diagnoses ranked by readmission rate *(requires enrichment)* |
+| Medication Frequency | Most prescribed medications *(requires enrichment)* |
+| Length of Stay by Readmission | Mean/median/min/max LOS by readmission class |
+| Medications vs LOS | Scatter: number of medications vs mean length of stay |
 
 ---
 
-## Repository Structure
+## Chart Types (Dashboards)
+
+Bar · Line · Scatter · Box · Histogram · Heatmap · Choropleth Map · Pie · Donut · Multi-Line · Area (Stacked) · 3D Scatter · Sunburst · Treemap
+
+---
+
+## Primary Dataset
+
+**Diabetes 130-US Hospitals for Years 1999–2008**
+
+- ~101,766 inpatient encounters from 130 US hospitals
+- 50 features: demographics, diagnoses, medications, lab results, readmission status
+- Source: [UCI ML Repository](https://archive.ics.uci.edu/dataset/296/diabetes+130-us+hospitals+for+years+1999-2008) / Kaggle (`kaggle datasets download -d brandao/diabetes`)
+- Place at `data/raw/diabetic_data.csv`
+
+---
+
+## Project Structure
 
 ```
 alk_projektsemestralny2/
-├── README.md
-├── CLAUDE.md                  # AI assistant instructions
-├── requirements.txt
-├── config.json                # Pipeline parameters
-├── Makefile                   # make install / pipeline / run / test / diagrams
-├── data/
-│   ├── raw/                   # Place diabetic_data.csv here (gitignored)
-│   └── processed/             # Cleaned CSV output (gitignored)
-├── database/
-│   ├── schema.sql             # DDL — all 7 tables + indexes
-│   └── create_db.py           # Schema creation script
-├── scripts/
-│   ├── 01_ingest.py           # Validate + clean raw CSV
-│   ├── 02_load.py             # Load into SQLite (3NF, unpivot meds)
-│   ├── 03_query.py            # Parameterized SQL analysis functions
-│   ├── 04_visualize.py        # Generate 6 figures (plotly + seaborn)
-│   ├── 05_report.py           # HTML + PDF report export
-│   ├── ingest_helpers.py      # Validation logic (imported by tests)
-│   ├── query_helpers.py       # Query functions (imported by UI)
-│   └── visualize_helpers.py   # Chart helpers (imported by UI)
 ├── app/
-│   ├── main.py                # Streamlit entry point (st.navigation)
-│   ├── pages/
+│   ├── main.py                    # Streamlit entry point
+│   ├── state.py                   # Session state + DB-persisted report helpers
+│   ├── views/
 │   │   ├── 1_data_sources.py
 │   │   ├── 2_exploration.py
-│   │   ├── 3_analytics.py
-│   │   ├── 4_reports.py
-│   │   └── 5_architecture.py
+│   │   ├── 3_dashboards.py
+│   │   ├── 4_analytics.py
+│   │   ├── 5_reports.py
+│   │   └── 6_documentation.py
 │   ├── components/
-│   │   ├── sidebar.py         # DB status indicator
-│   │   └── charts.py          # Shared Plotly builders
-│   └── state.py               # st.session_state helpers
-├── notebooks/
-│   └── analysis.ipynb         # Interactive analysis notebook
-├── outputs/
-│   ├── figures/               # PNG exports (gitignored)
-│   └── report/                # HTML/PDF report (gitignored)
+│   │   ├── chart_builder.py       # 14 chart types
+│   │   ├── filter_panel.py        # Reusable column-level filter UI
+│   │   └── sidebar.py
+│   └── core/
+│       ├── pipeline.py            # CSV import, type detection, SQLite storage
+│       ├── query.py               # Parameterised queries, Filter dataclass
+│       ├── registry.py            # Analytics function registry (24 methods)
+│       ├── reports.py             # DB persistence for report items
+│       ├── introspect.py          # Live Mermaid diagram generation
+│       ├── type_detector.py       # Dataset type inference
+│       └── analytics/
+│           ├── generic.py         # 18 generic analytics functions
+│           └── diabetes.py        # 6 diabetes-specific functions
+├── database/
+│   ├── schema.sql                 # SQLite DDL (normalised 3NF schema + _datasets + _reports)
+│   └── create_db.py
+├── scripts/                       # Numbered ETL pipeline scripts
 ├── tests/
-│   ├── test_validation.py     # 20 unit tests — ingest/validation logic
-│   └── test_query.py          # 21 unit tests — SQL query functions
-└── docs/
-    ├── parameter_analysis.md  # Parameter sensitivity documentation
-    └── diagrams/
-        ├── er_diagram.mmd
-        ├── pipeline_flow.mmd
-        └── app_architecture.mmd
+│   └── test_integration.py        # 214 tests
+├── docs/diagrams/                 # Mermaid .mmd + rendered .png files
+├── data/raw/                      # Source CSVs (gitignored)
+├── config.json                    # Pipeline parameters
+├── requirements.txt
+└── Makefile
 ```
-
----
-
-## Tests
-
-```bash
-make test
-# or
-pytest tests/ -v
-```
-
-41 unit tests covering:
-- Null threshold column dropping
-- Z-score outlier removal
-- Age group validation
-- Readmission binary conversion
-- SQL query functions (in-memory SQLite)
 
 ---
 
 ## Architecture Diagrams
 
-Mermaid source files in `docs/diagrams/`. Render to PNG with:
+Three diagrams are generated live from the database schema and codebase via `app/core/introspect.py`:
 
-```bash
-# Requires Node.js + mermaid-cli: npm install -g @mermaid-js/mermaid-cli
-make diagrams
-```
+- **ER Diagram** — all tables, columns (up to 10 per table), and logical FK relationships
+- **Pipeline Flow** — real dataset names and row counts from `_datasets`
+- **App Architecture** — pages, components, core modules with live function counts
 
-Pre-rendered PNGs are committed so the app works without Node.js installed.
+Rendered to PNG at 4800×3600 effective resolution via `mmdc` (Mermaid CLI).
+Saved to `docs/diagrams/` — open the **Documentation** page and click **Regenerate Diagrams**.
 
 ---
 
-## Report
+## Testing
 
-After running the full pipeline, the report is at `outputs/report/report.html`.
-Open it in any browser or use the **Reports** view in the Streamlit app to export PDF.
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Using the venv
+.venv/bin/python -m pytest tests/ -q
+```
+
+**214 tests** covering: CSV ingestion validation, SQLite pipeline, all 24 analytics functions, chart builders, filter logic, report persistence, and outlier detection modes.
+
+---
+
+## Configuration (`config.json`)
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `null_threshold` | `0.84` | Drop columns with >84% missing values |
+| `outlier_zscore` | `3.0` | Remove rows where any numeric field exceeds z=3.0 |
+| `readmission_binary` | `false` | Merge `<30`+`>30` into one positive class |
+| `top_n_diagnoses` | `10` | Default diagnoses shown in diabetes analyses |

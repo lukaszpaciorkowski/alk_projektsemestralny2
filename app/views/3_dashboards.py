@@ -1,5 +1,5 @@
 """
-3_adhoc_charts.py — Ad Hoc Charts page.
+3_dashboards.py — Dashboards page.
 
 Allows visual chart building on any imported dataset.
 Chart type selection drives dynamic axis controls.
@@ -61,7 +61,7 @@ except Exception:
 
 init_state(engine)
 
-st.title("📈 Ad Hoc Charts")
+st.title("📈 Dashboards")
 st.markdown("Build interactive charts from any imported dataset.")
 
 if engine is None:
