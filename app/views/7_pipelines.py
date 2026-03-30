@@ -19,7 +19,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.components.sidebar import render_sidebar
-from app.core.pipeline import DB_PATH, get_engine, list_datasets
+from app.core.pipeline import DB_PATH, get_engine, list_datasets, save_dataframe_as_dataset
 from app.core.pipelines import (
     clear_pipeline_runs,
     clone_pipeline,
@@ -78,6 +78,28 @@ def _init_draft(
         "dataset_type": dataset_type,
         "steps":        [s.copy() for s in (steps or [])],
     }
+    # Overwrite widget-bound keys so st.text_input / st.selectbox pick up the
+    # new values on the next render (Streamlit ignores value= when the key
+    # already exists in session_state).
+    st.session_state["builder_name"]  = name
+    st.session_state["builder_desc"]  = description
+    type_options = ["generic", "diabetes"]
+    st.session_state["builder_dtype"] = dataset_type if dataset_type in type_options else "generic"
+    # Clear per-step widget keys from any previous draft
+    for k in [k for k in st.session_state
+              if k.startswith(("bp_", "builder_fn_", "builder_lbl_", "builder_rpt_",
+                               "fc_", "fo_", "fv_", "fadd_", "fr_", "up_", "dn_", "rm_"))]:
+        st.session_state.pop(k, None)
+    # Seed param widgets from the loaded steps so values show correctly
+    for step in (steps or []):
+        step_id = step.get("step_id", "")
+        fn = REGISTRY.get(step.get("function_id", ""))
+        if fn is None:
+            continue
+        saved_params = step.get("params") or {}
+        for param in fn.params:
+            key = f"bp_{step_id}_{param.name}"
+            st.session_state[key] = saved_params.get(param.name, param.default)
 
 
 def _get_draft() -> dict:
@@ -601,10 +623,12 @@ def _render_run(engine, datasets: list[dict]) -> None:
             )
 
         st.session_state[_RUN_STATE_KEY] = {
-            "pipeline_name":    pl["name"],
-            "dataset_name":     ds["display_name"],
-            "step_results":     step_results,
-            "run_id":           run_id,
+            "pipeline_name":     pl["name"],
+            "dataset_name":      ds["display_name"],
+            "dataset_table":     table_name,
+            "step_results":      step_results,
+            "pipeline_steps":    pl["steps"],   # kept so we can re-fetch filtered data
+            "run_id":            run_id,
             "n_added_to_report": n_added,
         }
 
@@ -620,6 +644,7 @@ def _render_run(engine, datasets: list[dict]) -> None:
         )
 
         import pandas as pd
+        pipeline_steps = run_state.get("pipeline_steps", [])
         for i, sr in enumerate(run_state["step_results"]):
             icon = _STATUS_ICON.get(sr["status"], "")
             dur  = sr.get("duration_s", 0)
@@ -661,6 +686,57 @@ def _render_run(engine, datasets: list[dict]) -> None:
                         st.error(f"Could not load table: {exc}")
 
                 st.caption(sr.get("result_summary", ""))
+
+                # ── Save as Dataset ───────────────────────────────────────
+                step = pipeline_steps[i] if i < len(pipeline_steps) else {}
+                step_filters = step.get("filters") or []
+                source_table = run_state.get("dataset_table", "")
+
+                save_key = f"save_ds_{run_state['run_id']}_{i}"
+                name_key  = f"save_ds_name_{run_state['run_id']}_{i}"
+
+                # Suggest a sanitised default name
+                import re as _re
+                label_slug = _re.sub(r"[^a-z0-9]+", "_", sr["label"].lower()).strip("_")
+                source_slug = _re.sub(r"[^a-z0-9]+", "_", run_state.get("dataset_name", "data").lower()).strip("_")
+                filter_hint = f"_{len(step_filters)}filters" if step_filters else ""
+                default_name = f"{source_slug}_{label_slug}{filter_hint}"
+
+                with st.container():
+                    ds_name_input = st.text_input(
+                        "Dataset name",
+                        value=default_name,
+                        key=name_key,
+                        label_visibility="collapsed",
+                        placeholder="Name for the new dataset",
+                    )
+                    if st.button("💾 Save as Dataset", key=save_key):
+                        try:
+                            from app.core.query import Filter, fetch_table
+                            filter_objs = [
+                                Filter(f["column"], f["op"], f.get("value"))
+                                for f in step_filters
+                                if f.get("column") and f.get("op")
+                            ]
+                            full_df = fetch_table(
+                                source_table, engine,
+                                filters=filter_objs, limit=500_000,
+                            )
+                            desc = (
+                                f"Derived from pipeline '{run_state['pipeline_name']}' "
+                                f"step '{sr['label']}' on dataset '{run_state['dataset_name']}'"
+                                + (f" with {len(step_filters)} filter(s)." if step_filters else ".")
+                            )
+                            new_table = save_dataframe_as_dataset(
+                                full_df, ds_name_input.strip() or default_name,
+                                engine, description=desc,
+                            )
+                            st.success(
+                                f"Saved {len(full_df):,} rows as **{ds_name_input}** "
+                                f"(table: `{new_table}`). Available on Data Sources page."
+                            )
+                        except Exception as exc:
+                            st.error(f"Save failed: {exc}")
 
 
 # ---------------------------------------------------------------------------

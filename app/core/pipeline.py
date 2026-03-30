@@ -519,6 +519,86 @@ def update_description(table_name: str, description: str, con: Engine) -> None:
         )
 
 
+def save_dataframe_as_dataset(
+    df: pd.DataFrame,
+    name: str,
+    con: Engine,
+    description: str = "",
+) -> str:
+    """
+    Persist a DataFrame as a new registered dataset.
+
+    Creates a ds_* table and adds a row to _datasets.
+    Returns the new table_name.
+
+    Raises ValueError if name is empty or df is empty.
+    """
+    if df.empty:
+        raise ValueError("Cannot save an empty DataFrame as a dataset.")
+    if not name.strip():
+        raise ValueError("Dataset name must not be empty.")
+
+    # Sanitised table name from the provided display name
+    table_name = make_table_name(name.strip())
+
+    # Check for table name collision (not checksum — derived datasets share source data)
+    with con.connect() as conn:
+        existing = conn.execute(
+            text("SELECT 1 FROM _datasets WHERE table_name = :tn"),
+            {"tn": table_name},
+        ).fetchone()
+        if existing:
+            # Add a short timestamp suffix to make it unique
+            from datetime import datetime as _dt
+            suffix = _dt.utcnow().strftime("%H%M%S")
+            table_name = f"{table_name}_{suffix}"
+
+    col_meta = detect_column_types(df)
+    dataset_type = detect_dataset_type(df)
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    columns_json = json.dumps(
+        [
+            {
+                "name": m.name,
+                "dtype": m.dtype,
+                "sql_type": m.sql_type,
+                "nullable": m.nullable,
+                "unique_count": m.unique_count,
+            }
+            for m in col_meta
+        ]
+    )
+    checksum = hashlib.md5(name.encode()).hexdigest()[:16]
+
+    with con.begin() as txn:
+        df.to_sql(table_name, con=txn, if_exists="fail", index=False, chunksize=5000)
+        txn.execute(
+            text(
+                """
+                INSERT INTO _datasets
+                    (table_name, display_name, dataset_type, enrichment_status,
+                     row_count, col_count, columns, checksum, uploaded_at, description)
+                VALUES
+                    (:table_name, :display_name, :dataset_type, 'none',
+                     :row_count, :col_count, :columns, :checksum, :uploaded_at, :description)
+                """
+            ),
+            {
+                "table_name":   table_name,
+                "display_name": name.strip(),
+                "dataset_type": dataset_type,
+                "row_count":    len(df),
+                "col_count":    len(df.columns),
+                "columns":      columns_json,
+                "checksum":     checksum,
+                "uploaded_at":  uploaded_at,
+                "description":  description,
+            },
+        )
+
+    return table_name
+
+
 def get_dataset_meta(table_name: str, con: Engine) -> dict | None:
     """Return full metadata dict for one dataset, or None if not found."""
     with con.connect() as conn:
