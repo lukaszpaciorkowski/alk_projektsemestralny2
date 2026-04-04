@@ -351,6 +351,7 @@ with st.container(border=True):
         plot_clicked = st.button("Plot", type="primary", use_container_width=True)
     with reset_col:
         if st.button("Reset"):
+            st.session_state.pop("adhoc_last_chart", None)
             st.rerun()
 
 # ---- Chart Output ----
@@ -422,29 +423,42 @@ if plot_clicked and _can_plot:
         }
     )
 
+    # Store last chart in session state so the Add to Report button works on rerun
+    st.session_state["adhoc_last_chart"] = {
+        "title": chart_title,
+        "fig": fig,
+        "filters": _filter_dicts,
+        "dataset_name": selected_ds["display_name"],
+        "total_rows": _total,
+    }
+
+# Render last chart outside the plot_clicked block so the Add to Report button
+# is processed correctly on its own rerun (plot_clicked would be False then).
+_last_chart = st.session_state.get("adhoc_last_chart")
+if _last_chart is not None:
     with st.container(border=True):
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(_last_chart["fig"], use_container_width=True)
 
         btn1, btn2 = st.columns(2)
         with btn1:
             if st.button("Add to Report"):
                 add_to_report(
-                    fig=fig,
-                    title=chart_title,
-                    filters=adhoc_filters,
-                    dataset_name=selected_ds["display_name"],
-                    total_rows=_total,
+                    fig=_last_chart["fig"],
+                    title=_last_chart["title"],
+                    filters=_last_chart["filters"],
+                    dataset_name=_last_chart["dataset_name"],
+                    total_rows=_last_chart["total_rows"],
                 )
-                st.success(f"Added '{chart_title}' to report.")
+                st.success(f"Added '{_last_chart['title']}' to report.")
         with btn2:
             # Plotly PNG download (requires kaleido)
             try:
                 import io
-                img_bytes = fig.to_image(format="png", width=1200, height=700)
+                img_bytes = _last_chart["fig"].to_image(format="png", width=1200, height=700)
                 st.download_button(
                     "Download PNG",
                     data=img_bytes,
-                    file_name=f"{chart_title.replace(' ', '_')}.png",
+                    file_name=f"{_last_chart['title'].replace(' ', '_')}.png",
                     mime="image/png",
                 )
             except Exception:
